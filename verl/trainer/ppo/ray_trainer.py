@@ -17,8 +17,11 @@ This trainer supports model-agonistic model initialization with huggingface
 """
 
 import os
+import statistics
+from collections import defaultdict, Counter
 from dataclasses import dataclass, field
 from enum import Enum
+from functools import partial
 from pprint import pprint
 from typing import Callable, Type, Tuple, Union
 
@@ -31,6 +34,7 @@ from verl.single_controller.ray import RayResourcePool, RayWorkerGroup, RayClass
 from verl.single_controller.ray.base import create_colocated_worker_cls
 from verl import DataProto
 from verl.trainer.ppo import core_algos
+from verl.utils.dataset.rl_dataset import BufferedDataLoader
 
 WorkerType = Type[Worker]
 
@@ -110,13 +114,13 @@ def apply_kl_penalty(data: DataProto, kl_ctrl: core_algos.AdaptiveKLController, 
     return data, metrics
 
 
-def compute_advantage(data: DataProto, gamma, lam, adv_estimator):
+def compute_advantage(data: DataProto, gamma, lam, adv_estimator, config):
     values = data.batch['values']
     responses = data.batch['responses']
     response_length = responses.size(1)
     attention_mask = data.batch['attention_mask']
     response_mask = attention_mask[:, -response_length:]
-    token_level_rewards = data.batch['token_level_rewards']
+    token_level_rewards = data.batch['token_level_rewards'] if 'token_level_rewards' in list(data.batch.keys()) else data.batch['token_level_scores']
 
     # TODO: add other ways to estimate advantages
     if adv_estimator == 'gae':
@@ -125,6 +129,14 @@ def compute_advantage(data: DataProto, gamma, lam, adv_estimator):
                                                                       eos_mask=response_mask,
                                                                       gamma=gamma,
                                                                       lam=lam)
+        data.batch['advantages'] = advantages
+        data.batch['returns'] = returns
+    elif adv_estimator == 'rloo':
+        prompt_ids = data.batch['prompts']
+        prompt_length = prompt_ids.shape[-1]
+        valid_response_length = data.batch['attention_mask'][:,prompt_length:].sum(-1)
+        advantages, returns = core_algos.compute_rloo_returns(data=data,
+                                                eos_mask=response_mask,n_samples=config.data.n_samples,valid_response_length=valid_response_length)
         data.batch['advantages'] = advantages
         data.batch['returns'] = returns
     else:
@@ -186,7 +198,6 @@ def compute_data_metrics(batch):
         'prompt_length/min': torch.min(prompt_length).detach().item(),
     }
     return metrics
-
 
 class RayPPOTrainer(object):
     """
@@ -250,11 +261,11 @@ class RayPPOTrainer(object):
                                          filter_prompts=True,
                                          return_raw_chat=self.config.data.get('return_raw_chat', False),
                                          truncation='error')
-        self.train_dataloader = DataLoader(dataset=self.train_dataset,
-                                           batch_size=self.config.data.train_batch_size,
+        self.train_dataloader = BufferedDataLoader(DataLoader(dataset=self.train_dataset,
+                                           batch_size=self.config.data.train_batch_size*self.config.data.oversample_factor,
                                            shuffle=True,
                                            drop_last=True,
-                                           collate_fn=collate_fn)
+                                           collate_fn=collate_fn))
 
         self.val_dataset = RLHFDataset(parquet_files=self.config.data.val_files,
                                        tokenizer=self.tokenizer,
@@ -286,6 +297,7 @@ class RayPPOTrainer(object):
     def _validate(self):
         reward_tensor_lst = []
         data_source_lst = []
+        metric_dict = {}
         for test_data in self.val_dataloader:
             test_batch = DataProto.from_single_dict(test_data)
             # test_batch = test_batch.to('cuda')
@@ -310,7 +322,11 @@ class RayPPOTrainer(object):
 
             # evaluate using reward_function
             # for certain reward function (e.g. sandbox), the generation can overlap with reward
-            reward_tensor = self.val_reward_fn(test_batch)
+            reward_tensor, reward_metrics = self.val_reward_fn.verify(test_batch)
+            reward_tensor=reward_tensor.unsqueeze(-1)
+
+            for k, v in reward_metrics.items():
+                metric_dict['test_reward/' + k] = v
 
             reward_tensor_lst.append(reward_tensor)
             data_source_lst.append(test_batch.non_tensor_batch.get('data_source', ['unknown'] * reward_tensor.shape[0]))
@@ -353,8 +369,9 @@ class RayPPOTrainer(object):
             critic_cls = RayClassWithInitArgs(cls=self.role_worker_mapping[Role.Critic], config=self.config.critic)
             self.resource_pool_to_cls[resource_pool]['critic'] = critic_cls
             self.use_critic = True
+        elif self.config.algorithm.adv_estimator in ['rloo']:
+            self.use_critic = False
         else:
-            # support GRPO and ReMax
             raise NotImplementedError
 
         # create reference policy if needed
@@ -417,6 +434,9 @@ class RayPPOTrainer(object):
                           config=OmegaConf.to_container(self.config, resolve=True))
 
         global_steps = 0
+        dp_size = self.actor_rollout_wg.world_size // self.config.actor_rollout_ref.rollout.tensor_model_parallel_size
+        batch_size = self.config.data.train_batch_size
+        n_samples = self.config.data.n_samples
 
         # perform validation before training
         # currently, we only support validation using the reward_function.
@@ -428,21 +448,81 @@ class RayPPOTrainer(object):
                 return
 
         for epoch in range(self.config.trainer.total_epochs):
-            for batch_dict in self.train_dataloader:
-                metrics = {}
+            self.train_dataloader.start_new_epoch()
+            while True:
+                valid_batch = []
+                buffer_batch = []
 
-                batch: DataProto = DataProto.from_single_dict(batch_dict)
-                # batch = batch.to('cuda')
+                if self.train_dataloader.buffer_size() > 0:
+                    buffer_batch = self.train_dataloader.get_from_buffer(batch_size, self.actor_rollout_wg.world_size)
+                metrics = defaultdict(list)
+                metrics['timing/gen'] = 0
+                metrics['timing/verify'] = 0
 
-                # pop those keys for generation
-                gen_batch = batch.pop(batch_keys=['input_ids', 'attention_mask', 'position_ids'])
+                while len(valid_batch) < batch_size * n_samples:
+                    try:
+                        batch_dict = self.train_dataloader.get_next_batch()
+                    except StopIteration:
+                        break
 
-                # generate a batch
-                with Timer(name='gen', logger=None) as timer:
-                    gen_batch_output = self.actor_rollout_wg.generate_sequences(gen_batch)
-                metrics['timing/gen'] = timer.last
+                    # generate a batch
+                    with Timer(name='gen', text="{name}: {seconds:.1f} seconds") as timer:
 
-                batch = batch.union(gen_batch_output)
+                        newbatch: DataProto = DataProto.from_single_dict(batch_dict)
+
+                        if len(buffer_batch) > 0:
+                            newbatch = DataProto.concat([buffer_batch, newbatch])
+                            print(len(newbatch))
+                            buffer_batch = []
+
+                        # the results from the same prompt should be contiguous !
+                        gen_batch = newbatch.select(batch_keys=['input_ids', 'attention_mask', 'position_ids'],
+                                                    non_tensor_batch_keys={},
+                                                    meta_info_keys={})
+
+                        batch_lst = sum([[newbatch[i:i + 1] for _ in range(n_samples)] for i in range(len(newbatch))],
+                                        [])
+
+                        gen_batch.meta_info = {
+                            'eos_token_id': self.tokenizer.eos_token_id,
+                            'n_samples': n_samples,
+                        }
+
+                        gen_batch_output = self.actor_rollout_wg.generate_sequences(prompts=gen_batch)
+
+                        roll_batch = DataProto.concat(batch_lst)
+                        roll_batch.pop(batch_keys=['input_ids', 'attention_mask', 'position_ids'])
+                        roll_batch = roll_batch.union(gen_batch_output)
+
+                    metrics['timing/gen'] += timer.last
+
+                    # do accuracy filtering and score logging
+                    with Timer(name='verify', text="{name}: {seconds:.1f} seconds") as timer:
+                        scores_tensor, reward_metrics = self.reward_fn.verifier(roll_batch)
+                        for k, v in reward_metrics.items():
+                            metrics['train_verify_score/' + k].append(v)
+
+                        if self.config.data.filter_accuracy:
+                            roll_batch = self.filter(roll_batch.batch['acc'].unsqueeze(1), roll_batch, n_samples)
+                    metrics['timing/verify'] += timer.last
+
+                    if len(valid_batch) == 0:
+                        valid_batch = roll_batch
+                    else:
+                        valid_batch = DataProto.concat([valid_batch, roll_batch])
+                    print(
+                        f"collected {len(valid_batch)} / {batch_size * n_samples} rollouts and each prompt has {n_samples} responses")
+
+                if len(valid_batch) < batch_size * n_samples:
+                    break
+                elif len(valid_batch) > batch_size * n_samples:
+                    valid_batch = self.add_to_buffer(valid_batch, batch_size, n_samples)
+
+                for k, v in reward_metrics.items():
+                    metrics['train_verify_score/' + k] = np.mean(metrics['train_verify_score/' + k])
+
+                batch = valid_batch
+                print(f'rollout batch size: {len(batch)}')
 
                 if self.use_reference_policy:
                     # compute reference log_prob
@@ -451,24 +531,30 @@ class RayPPOTrainer(object):
                         batch = batch.union(ref_log_prob)
                     metrics['timing/ref'] = timer.last
 
-                # compute values
-                with Timer(name='values', logger=None) as timer:
-                    values = self.critic_wg.compute_values(batch)
-                    batch = batch.union(values)
-                metrics['timing/values'] = timer.last
-
-                with Timer(name='adv', logger=None) as timer:
-                    # compute scores. Support both model and function-based.
-                    # We first compute the scores using reward model. Then, we call reward_fn to combine
-                    # the results from reward model and rule-based results.
+                with Timer(name='reward', logger=None) as timer:
                     if self.use_rm:
-                        # we first compute reward model score
-                        reward_tensor = self.rm_wg.compute_rm_score(batch)
-                        batch = batch.union(reward_tensor)
+                        batch.meta_info['n_samples'] = n_samples
+                        reward_model_tensor, reward_metrics = self.rm_wg.compute_reward_tensor(batch)
+                        if 'metrics' in reward_model_tensor.meta_info:
+                            reward_model_metrics = reduce_metrics(reward_model_tensor.meta_info.pop('metrics'))
+                            metrics.update(reward_model_metrics)
+                        batch = batch.union(reward_model_tensor)
 
-                    # we combine with rule-based rm
-                    reward_tensor = self.reward_fn(batch)
-                    batch.batch['token_level_scores'] = reward_tensor
+                metrics['timing/reward_model'] = timer.last
+
+                # compute values
+                if self.use_critic:
+                    with Timer(name='values', logger=None) as timer:
+                        values = self.critic_wg.compute_values(batch)
+                        batch = batch.union(values)
+                    metrics['timing/values'] = timer.last
+
+                with Timer(name='adv', logger=None) as timer: # TODO: reward change to dict here.
+                    reward_tensor_dict, reward_metrics = self.reward_fn(batch)
+                    batch.batch['token_level_scores'] = reward_tensor_dict['all']
+                    # decomposed rewards:
+                    for k,v in reward_tensor_dict.items():
+                        batch.batch[k]=v
 
                     # compute rewards. apply_kl_penalty if available
                     batch, kl_metrics = apply_kl_penalty(batch,
@@ -480,7 +566,8 @@ class RayPPOTrainer(object):
                     batch = compute_advantage(batch,
                                               self.config.algorithm.gamma,
                                               self.config.algorithm.lam,
-                                              adv_estimator=self.config.algorithm.adv_estimator)
+                                              adv_estimator=self.config.algorithm.adv_estimator,
+                                              config = self.config)
                 metrics['timing/adv'] = timer.last
 
                 # update critic
@@ -536,3 +623,29 @@ class RayPPOTrainer(object):
             val_metrics = self._validate()
             pprint(f'Final validation metrics: {val_metrics}')
             logger.log(data=val_metrics, step=global_steps)
+
+    def filter(self, reward_tensor, batch, n_samples):
+        reward_matrix = reward_tensor.sum(-1).reshape(-1, n_samples)
+        # reward_matrix = reward_tensor.sum(-1).reshape(n_samples, -1).T
+        acc_tensor = torch.mean(reward_matrix, dim=-1)
+        counts = Counter(acc_tensor.tolist())
+        print(" ".join(f"{k}:{v}" for k, v in sorted(counts.items())))
+        # print(acc_tensor)
+        acc_mask = (acc_tensor >= self.config.data.accuracy_lower_bound) & (
+                    acc_tensor <= self.config.data.accuracy_upper_bound)
+        acc_mask = acc_mask.repeat_interleave(n_samples)
+        batch = batch.slice(acc_mask)
+        return batch
+
+    def add_to_buffer(self, batch, batch_size, n_samples):
+        buffer_length = len(batch) // n_samples - batch_size
+        buffer_batch = batch.slice(range(batch_size * n_samples, (buffer_length + batch_size) * n_samples, n_samples))
+        # notice that we only add prompts to buffer, and slicing strategy should be exactly consistent to what is in ray_trainer.py
+        buffer_batch = buffer_batch.select(batch_keys=['input_ids', 'attention_mask', 'position_ids'])
+        buffer_batch.slice_batch(start=0, length=self.config.data.max_prompt_length, dim=1)
+        buffer_mask = torch.ones(buffer_length + batch_size, dtype=torch.bool)
+        buffer_mask[batch_size:] = False
+        buffer_mask = buffer_mask.repeat_interleave(n_samples)
+        batch = batch.slice(buffer_mask)
+        self.train_dataloader.add_to_buffer(buffer_batch)
+        return batch

@@ -804,3 +804,5 @@ class RewardModelWorker(Worker):
         output = output.to('cpu')
         torch.cuda.empty_cache()
         return output
+
+PRIMERewardModelWorker=RewardModelWorker
