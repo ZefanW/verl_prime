@@ -3,35 +3,6 @@ import json
 import re
 import traceback
 
-
-def postprocess_completion(executor, completion):
-    executions = ["!" + code for code in re.findall(r"```bash(.*?)```", completion, re.DOTALL) if "!" not in code]
-    executions.extend(re.findall(r"```python(.*?)```", completion, re.DOTALL))
-
-    if len(executions) == 0:  # directly return cot result
-        return completion
-    else:
-        ### Python
-        execution_outputs = []
-        for code in executions:
-            try:
-                success, output = executor(code)
-            except TimeoutError:
-                print("time out")
-                # success = False
-                output = ""
-            else:
-                output = output if success else ""
-            execution_outputs.append(output)
-        extracted_outputs = execution_outputs
-
-        for index in range(1, len(extracted_outputs) + 1):
-            extracted_solution = str(extracted_outputs[-index]).strip()
-            break
-
-        return extracted_solution
-
-
 def evaluate_code(completion, test_cases):
     # try to get code solution from completion. if the completion is pure code, this will not take effect.
     solution = completion.split('```python')[-1].split('```')[0]
@@ -41,7 +12,6 @@ def evaluate_code(completion, test_cases):
                 test_cases = json.loads(test_cases)
         except Exception as e:
             print(f"Error:{e}")
-        
 
         # 先检查正确性，如果正确，则再one by one 检查test case
         try:

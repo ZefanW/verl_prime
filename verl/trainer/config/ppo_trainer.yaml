@@ -108,7 +108,7 @@ verifier:
   reward_coef: 5
 
 reward_model:
-  enable: False
+  enable: True
   strategy: fsdp
   model:
     input_tokenizer: ${actor_rollout_ref.model.path}  # set this to null if the chat template is identical

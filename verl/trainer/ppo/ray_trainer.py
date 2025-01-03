@@ -115,7 +115,7 @@ def apply_kl_penalty(data: DataProto, kl_ctrl: core_algos.AdaptiveKLController, 
 
 
 def compute_advantage(data: DataProto, gamma, lam, adv_estimator, config):
-    values = data.batch['values']
+
     responses = data.batch['responses']
     response_length = responses.size(1)
     attention_mask = data.batch['attention_mask']
@@ -124,6 +124,7 @@ def compute_advantage(data: DataProto, gamma, lam, adv_estimator, config):
 
     # TODO: add other ways to estimate advantages
     if adv_estimator == 'gae':
+        values = data.batch['values']
         advantages, returns = core_algos.compute_gae_advantage_return(token_level_rewards=token_level_rewards,
                                                                       values=values,
                                                                       eos_mask=response_mask,
@@ -132,11 +133,11 @@ def compute_advantage(data: DataProto, gamma, lam, adv_estimator, config):
         data.batch['advantages'] = advantages
         data.batch['returns'] = returns
     elif adv_estimator == 'rloo':
-        prompt_ids = data.batch['prompts']
-        prompt_length = prompt_ids.shape[-1]
-        valid_response_length = data.batch['attention_mask'][:,prompt_length:].sum(-1)
+        # prompt_ids = data.batch['prompts']
+        # prompt_length = prompt_ids.shape[-1]
+        # valid_response_length = data.batch['attention_mask'][:,prompt_length:].sum(-1)
         advantages, returns = core_algos.compute_rloo_returns(data=data,
-                                                eos_mask=response_mask,n_samples=config.data.n_samples,valid_response_length=valid_response_length)
+                                                eos_mask=response_mask,n_samples=config.data.n_samples, config=config)
         data.batch['advantages'] = advantages
         data.batch['returns'] = returns
     else:
@@ -165,7 +166,7 @@ def compute_data_metrics(batch):
     response_length = response_mask.sum(-1).float()  # (batch_size,)
 
     returns = batch.batch['returns']
-    values = batch.batch['values']
+    # values = batch.batch['values']
 
     metrics = {
         # score
@@ -185,9 +186,9 @@ def compute_data_metrics(batch):
         'critic/returns/max': torch.max(returns[response_mask.bool()]).detach().item(),
         'critic/returns/min': torch.min(returns[response_mask.bool()]).detach().item(),
         # values
-        'critic/values/mean': masked_mean(values, response_mask).detach().item(),
-        'critic/values/max': torch.max(values[response_mask.bool()]).detach().item(),
-        'critic/values/min': torch.min(values[response_mask.bool()]).detach().item(),
+        # 'critic/values/mean': masked_mean(values, response_mask).detach().item(),
+        # 'critic/values/max': torch.max(values[response_mask.bool()]).detach().item(),
+        # 'critic/values/min': torch.min(values[response_mask.bool()]).detach().item(),
         # response length
         'response_length/mean': torch.mean(response_length).detach().item(),
         'response_length/max': torch.max(response_length).detach().item(),
@@ -262,7 +263,7 @@ class RayPPOTrainer(object):
                                          return_raw_chat=self.config.data.get('return_raw_chat', False),
                                          truncation='error')
         self.train_dataloader = BufferedDataLoader(DataLoader(dataset=self.train_dataset,
-                                           batch_size=self.config.data.train_batch_size*self.config.data.oversample_factor,
+                                           batch_size=int(self.config.data.train_batch_size*self.config.data.oversample_factor),
                                            shuffle=True,
                                            drop_last=True,
                                            collate_fn=collate_fn))
@@ -322,8 +323,8 @@ class RayPPOTrainer(object):
 
             # evaluate using reward_function
             # for certain reward function (e.g. sandbox), the generation can overlap with reward
-            reward_tensor, reward_metrics = self.val_reward_fn.verify(test_batch)
-            reward_tensor=reward_tensor.unsqueeze(-1)
+            verifier_score, reward_metrics = self.val_reward_fn.verify(test_batch)
+            reward_tensor=torch.tensor(verifier_score, dtype=torch.float32).unsqueeze(-1)
 
             for k, v in reward_metrics.items():
                 metric_dict['test_reward/' + k] = v
@@ -498,7 +499,7 @@ class RayPPOTrainer(object):
 
                     # do accuracy filtering and score logging
                     with Timer(name='verify', text="{name}: {seconds:.1f} seconds") as timer:
-                        scores_tensor, reward_metrics = self.reward_fn.verifier(roll_batch)
+                        scores_tensor, reward_metrics = self.reward_fn.verify(roll_batch)
                         for k, v in reward_metrics.items():
                             metrics['train_verify_score/' + k].append(v)
 
@@ -526,15 +527,15 @@ class RayPPOTrainer(object):
 
                 if self.use_reference_policy:
                     # compute reference log_prob
-                    with Timer(name='ref', logger=None) as timer:
+                    with Timer(name='ref', text="{name}: {seconds:.1f} seconds") as timer:
                         ref_log_prob = self.ref_policy_wg.compute_ref_log_prob(batch)
                         batch = batch.union(ref_log_prob)
                     metrics['timing/ref'] = timer.last
 
-                with Timer(name='reward', logger=None) as timer:
+                with Timer(name='reward', text="{name}: {seconds:.1f} seconds") as timer:
                     if self.use_rm:
                         batch.meta_info['n_samples'] = n_samples
-                        reward_model_tensor, reward_metrics = self.rm_wg.compute_reward_tensor(batch)
+                        reward_model_tensor= self.rm_wg.compute_rm_score(batch)
                         if 'metrics' in reward_model_tensor.meta_info:
                             reward_model_metrics = reduce_metrics(reward_model_tensor.meta_info.pop('metrics'))
                             metrics.update(reward_model_metrics)
@@ -544,14 +545,16 @@ class RayPPOTrainer(object):
 
                 # compute values
                 if self.use_critic:
-                    with Timer(name='values', logger=None) as timer:
+                    with Timer(name='values', text="{name}: {seconds:.1f} seconds") as timer:
                         values = self.critic_wg.compute_values(batch)
                         batch = batch.union(values)
                     metrics['timing/values'] = timer.last
 
-                with Timer(name='adv', logger=None) as timer: # TODO: reward change to dict here.
+                with Timer(name='adv', text="{name}: {seconds:.1f} seconds") as timer:
                     reward_tensor_dict, reward_metrics = self.reward_fn(batch)
                     batch.batch['token_level_scores'] = reward_tensor_dict['all']
+                    for k, v in reward_metrics.items():
+                        metrics['train_reward/' + k] = v
                     # decomposed rewards:
                     for k,v in reward_tensor_dict.items():
                         batch.batch[k]=v
@@ -572,7 +575,7 @@ class RayPPOTrainer(object):
 
                 # update critic
                 if self.use_critic:
-                    with Timer(name='update_critic', logger=None) as timer:
+                    with Timer(name='update_critic', text="{name}: {seconds:.1f} seconds") as timer:
                         critic_output = self.critic_wg.update_critic(batch)
                     metrics['timing/update_critic'] = timer.last
                     critic_output_metrics = reduce_metrics(critic_output.meta_info['metrics'])
@@ -581,7 +584,7 @@ class RayPPOTrainer(object):
                 # implement critic warmup
                 if self.config.trainer.critic_warmup <= global_steps:
                     # update actor
-                    with Timer(name='update_actor', logger=None) as timer:
+                    with Timer(name='update_actor', text="{name}: {seconds:.1f} seconds") as timer:
                         actor_output = self.actor_rollout_wg.update_actor(batch)
                     metrics['timing/update_actor'] = timer.last
                     actor_output_metrics = reduce_metrics(actor_output.meta_info['metrics'])
@@ -589,7 +592,7 @@ class RayPPOTrainer(object):
 
                 # validate
                 if self.val_reward_fn is not None and (global_steps + 1) % self.config.trainer.test_freq == 0:
-                    with Timer(name='testing', logger=None) as timer:
+                    with Timer(name='testing', text="{name}: {seconds:.1f} seconds") as timer:
                         val_metrics: dict = self._validate()
                         val_metrics = {f'val/{key}': val for key, val in val_metrics.items()}
                     metrics['timing/testing'] = timer.last

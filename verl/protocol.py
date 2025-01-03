@@ -119,6 +119,19 @@ class DataProto:
         non_tensor_data = {key: val[item] for key, val in self.non_tensor_batch.items()}
         return DataProtoItem(batch=tensor_data, non_tensor_batch=non_tensor_data, meta_info=self.meta_info)
 
+    def slice(self, index):
+        tensor_data = self.batch[index]
+        non_tensor_data = {key: val[index] for key, val in self.non_tensor_batch.items()}
+        return DataProto(batch=tensor_data, non_tensor_batch=non_tensor_data, meta_info=self.meta_info)
+
+    def slice_batch(self, start, length, dim=0):
+        """
+        Note that this operation is in-place
+        """
+        for key, val in self.batch.items():
+            self.batch[key] = val.narrow(start=start, length=length, dim=dim)
+
+
     def __getstate__(self):
         import io
         buffer = io.BytesIO()

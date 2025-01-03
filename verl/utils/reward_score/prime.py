@@ -17,6 +17,7 @@ def process_completion(completion, task, reference):
     elif task == "math":
         return evaluate_math(completion, str(reference))
     else:
+        print('task')
         raise NotImplementedError
 
 async def process_row_with_timeout(completion, reference, task, executor, timeout=300.0):
@@ -29,7 +30,7 @@ async def process_row_with_timeout(completion, reference, task, executor, timeou
         tasks = [asyncio.wait_for(
             loop.run_in_executor(
                 executor,
-                partial(process_completion, completion, reference, task)  # Ensure synchronous
+                partial(process_completion, completion, task, reference)  # Ensure synchronous
             ),
             timeout=timeout
         )
@@ -39,7 +40,7 @@ async def process_row_with_timeout(completion, reference, task, executor, timeou
         print(f"Timeout occurred for completion: {completion}")
         return None  # Default value for timed-out rows
     except Exception as e:
-        print(f"Error processing completion: {completion}, Error: {e}")
+        print(f"Error processing completion: {completion[:10]}, Error: {e}")
         return None  # Default value for failed rows
 
 async def parallel_evaluate_continual_async(completions, references, tasks, num_processes, task_timeout=300.0):
@@ -75,7 +76,7 @@ async def parallel_evaluate_continual_async(completions, references, tasks, num_
             else:
                 scores.append(float(int(result[0][0])))
         except Exception as e:
-            print(f"Error processing result for row: {completion}, Error: {e}")
+            print(f"Error processing result for row: {completion[:10]}, Error: {e}")
             scores.append(0.0)
 
     return scores
