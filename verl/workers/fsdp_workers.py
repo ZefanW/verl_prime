@@ -1088,7 +1088,7 @@ class PRIMERewardModelWorker(Worker):
                 # with torch.autocast(device_type='cuda',dtype=torch.bfloat16):
                 token_level_score, q= self._forward_micro_batch(micro_batch, prompt_length)
                 token_level_scores.append(token_level_score)
-                original_token_level_score = torch.cat(q)
+                original_token_level_score = q
                 acc = micro_batch['acc']
                 attention_mask = micro_batch['attention_mask']
                 eos_mask = attention_mask[:, prompt_length:]
