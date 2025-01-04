@@ -148,6 +148,7 @@ def compute_rloo_returns(data:verl.DataProto, eos_mask:torch.Tensor,n_samples,co
         # return is the sum of discounted reward
         returns = sum(discount_rewards)
         # advantage is whitened return
+        advantages = returns.clone()
         advantages = verl_F.masked_whiten(advantages, eos_mask)
     return advantages, returns
 

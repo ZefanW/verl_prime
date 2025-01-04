@@ -903,7 +903,7 @@ class PRIMERewardModelWorker(Worker):
                 sharding_strategy=ShardingStrategy.FULL_SHARD,  # zero3
                 sync_module_states=True)
 
-        self.update_dpo_type = self.config.prime_model.get('update_dpo', 'none')
+        self.update_dpo_type = self.config.prime_model.get('update', 'none')
         if self.update_dpo_type in ['before', 'after']:
 
             from torch import optim

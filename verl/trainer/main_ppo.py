@@ -90,6 +90,7 @@ class RewardManager():
                 reward_tensor += self.config.reward_model.rm_coef * reward_tensor_dict['rm_scores']
 
         if self.config.verifier.reward_coef!=0:
+            reward_metrics['verifier'] = data.batch['gt_scores'].sum(dim=1).mean().item()
             reward_tensor += self.config.verifier.reward_coef * reward_tensor_dict['gt_scores']
 
         reward_tensor_dict['all'] = reward_tensor
