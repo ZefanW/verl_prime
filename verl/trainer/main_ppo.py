@@ -22,7 +22,7 @@ from functools import partial
 from verl import DataProto
 import torch
 from verl.utils.reward_score import gsm8k, math
-from verl.trainer.ppo.ray_trainer import RayPPOTrainer
+from verl.trainer.ppo.ray_trainer import RayPRIMETrainer
 
 
 def _select_rm_score_fn(data_source):
@@ -202,7 +202,7 @@ def main_task(config):
 
     resource_pool_manager = ResourcePoolManager(resource_pool_spec=resource_pool_spec, mapping=mapping)
 
-    trainer = RayPPOTrainer(config=config,
+    trainer = RayPRIMETrainer(config=config,
                             tokenizer=tokenizer,
                             role_worker_mapping=role_worker_mapping,
                             resource_pool_manager=resource_pool_manager,

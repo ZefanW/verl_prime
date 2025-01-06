@@ -200,7 +200,7 @@ def compute_data_metrics(batch):
     }
     return metrics
 
-class RayPPOTrainer(object):
+class RayPRIMETrainer(object):
     """
     Note that this trainer runs on the driver process on a single CPU/GPU node.
     """

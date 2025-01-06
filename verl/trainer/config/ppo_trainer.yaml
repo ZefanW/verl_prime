@@ -124,7 +124,7 @@ reward_model:
   rm_type: value # set to prime for process reward
   # configurations for process rewards of prime
   prime_granularity: token # whole
-  prime_norm: none # batch_norm
+  prime_norm: batch_norm # batch_norm
   prime_model:
     input_tokenizer: ${actor_rollout_ref.model.path}
     path: /home/wangzefan/huggingface/dpo-prm
