@@ -4,9 +4,11 @@ set -x
 export OUTLINES_CACHE_DIR=~/.cache/outlines/$(uuidgen)
 export NCCL_DEBUG=WARN
 export WANDB_API_KEY='194ba8b74c01d7f88fbf18db8f53206e24b2d46a'
-export VLLM_ATTENTION_BACKEND=FLASH_ATTN
+export VLLM_ATTENTION_BACKEND=XFORMERS
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export TOKENIZERS_PARALLELISM=true
+export WANDB_MODE=offline
+export WANDB_DIR=/home/test/test05/wzf/verl_prime/
 
 BASE_DIR=/home/test/test05/wzf/verl
 HF_DIR=/home/test/test05/wzf/huggingface
@@ -16,13 +18,11 @@ COMBINE_PATH=$BASE_DIR/datasets/combine1203
 CODE_PATH=$BASE_DIR/datasets/code_1113_short
 SOLVABLE_NUMINA_PATH=/home/test/test05/cgq/data/numina_solvable
 PROJECT_NAME='o1_pr'
-EXPERIMENT_NAME='gt-prm-online-before-solvable-0.2-0.8-policy-self-ref'
+EXPERIMENT_NAME='gt-prm-online-before-solvable-0.2-0.8-policy-self-ref-xformers'
 
 python3 -m verl.trainer.main_ppo \
     data.train_files=["$SOLVABLE_NUMINA_PATH/train.parquet","$CODE_PATH/train.parquet"] \
     data.val_files=["$SOLVABLE_NUMINA_PATH/test.parquet","$CODE_PATH/test.parquet"] \
-    data.train_batch_size=1024 \
-    data.val_batch_size=6304 \
     data.train_batch_size=256 \
     data.val_batch_size=1024 \
     data.max_prompt_length=1024 \

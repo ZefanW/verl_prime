@@ -50,12 +50,12 @@ async def parallel_evaluate_continual_async(completions, references, tasks, num_
     scores = []
     with ProcessPoolExecutor(max_workers=num_processes) as executor:
         # Create tasks for all rows
-        tasks = [
+        tasks_async = [
             process_row_with_timeout(completion, reference, task, executor, timeout=task_timeout)
             for completion, reference, task in zip(completions, references, tasks)
         ]
         # Use tqdm for progress tracking
-        results = await tqdm.gather(*tasks, disable=True)
+        results = await tqdm.gather(*tasks_async, disable=True)
 
     # Process results
     for result, completion, reference, task in zip(results, completions, references, tasks):
@@ -68,7 +68,7 @@ async def parallel_evaluate_continual_async(completions, references, tasks, num_
             # Process result based on task type
             if task == 'code' and not result[0][0]: # if task is code, the reference should be json string
                 correct = 0
-                total = min(len(json.loads(reference)['inputs']), 10)
+                total = min(len(json.loads(reference)['inputs'] if not isinstance(reference,dict) else reference['inputs']), 10)
                 for run in result[0][1]:
                     if 'test_case' in run and 'res' in run['test_case'] and run['test_case']['res'] == '[True]':
                         correct += 1

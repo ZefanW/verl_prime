@@ -346,6 +346,8 @@ class RayPRIMETrainer(object):
         for data_source, rewards in data_source_reward.items():
             metric_dict[f'test_score/{data_source}'] = np.mean(rewards)
 
+        metric_dict[f'test_score/all']=reward_tensor.mean().item()
+
         return metric_dict
 
     def init_workers(self):
