@@ -1157,6 +1157,9 @@ class PRIMERewardModelWorker(Worker):
         if self.config.prime_norm == 'batch_norm':  # this method will still consider the relative value of rewards. The key is to control the absolute value of RETURN from being too high. so the normalization is done by controlling the maximum of reverse cumulative sum
             reverse_cumsum = torch.cumsum(token_level_scores.flip(dims=[1]), dim=-1).flip(dims=[1])
             token_level_scores = token_level_scores / (reverse_cumsum.abs().max() + 1e-6)
+        else:
+            # no normalization, the reward will be normalized by beta_train
+            token_level_scores = token_level_scores * beta
 
         output = DataProto.from_dict(tensors={'rm_scores': token_level_scores}, meta_info={'metrics': metrics})
         if self.update_dpo_type != 'none':

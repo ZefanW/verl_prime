@@ -85,14 +85,15 @@ critic:
     tokenizer_path: ${actor_rollout_ref.model.path}
     override_config: {}
     external_lib: ${actor_rollout_ref.model.external_lib}
-    enable_gradient_checkpointing: False
+    enable_gradient_checkpointing: ${actor_rollout_ref.model.enable_gradient_checkpointing}
     fsdp_config:
-      param_offload: False
-      grad_offload: False
-      optimizer_offload: False
+      param_offload: ${actor_rollout_ref.actor.fsdp_config.param_offload}
+      grad_offload: ${actor_rollout_ref.actor.fsdp_config.grad_offload}
+      optimizer_offload: ${actor_rollout_ref.actor.fsdp_config.optimizer_offload}
       wrap_policy:
         # transformer_layer_cls_to_wrap: None
         min_num_params: 0
+    type: value # if set to implicit, this will become an implicit PRM which updates according to gt. this only supports initializing from the reference model currently.
   ppo_mini_batch_size: ${actor_rollout_ref.actor.ppo_mini_batch_size}
   ppo_micro_batch_size: 64
   ppo_epochs: ${actor_rollout_ref.actor.ppo_epochs}
@@ -124,7 +125,7 @@ reward_model:
   rm_type: value # set to prime for process reward
   # configurations for process rewards of prime
   prime_granularity: token # whole
-  prime_norm: batch_norm # batch_norm
+  prime_norm: batch_norm # batch_norm or none. if set to none, the normalizer is beta_train
   prime_model:
     input_tokenizer: ${actor_rollout_ref.model.path}
     path: /home/wangzefan/huggingface/dpo-prm

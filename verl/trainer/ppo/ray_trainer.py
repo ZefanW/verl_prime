@@ -130,18 +130,30 @@ def compute_advantage(data: DataProto, gamma, lam, adv_estimator, config):
                                                                       eos_mask=response_mask,
                                                                       gamma=gamma,
                                                                       lam=lam)
-        data.batch['advantages'] = advantages
-        data.batch['returns'] = returns
     elif adv_estimator == 'rloo':
         # prompt_ids = data.batch['prompts']
         # prompt_length = prompt_ids.shape[-1]
         # valid_response_length = data.batch['attention_mask'][:,prompt_length:].sum(-1)
         advantages, returns = core_algos.compute_rloo_returns(data=data,
                                                 eos_mask=response_mask,n_samples=config.data.n_samples, config=config)
-        data.batch['advantages'] = advantages
-        data.batch['returns'] = returns
+    elif adv_estimator == 'grpo':
+        advantages, returns = core_algos.compute_grpo_returns(data=data,
+                                                eos_mask=response_mask,n_samples=config.data.n_samples, config=config)
+    elif adv_estimator == 'reinforce':
+        advantages, returns = core_algos.compute_reinforce_returns(token_level_rewards=token_level_rewards,
+                                                                      eos_mask=response_mask,
+                                                                      gamma=gamma,
+                                                                      )
+    elif adv_estimator == 'remax':
+        advantages, returns = core_algos.compute_remax_returns(data=data,
+                                                eos_mask=response_mask,n_samples=config.data.n_samples, config=config)
+    elif adv_estimator =='gae_value':
+        advantages, returns = core_algos.compute_gae_value_returns(data=data,
+                                                eos_mask=response_mask,n_samples=config.data.n_samples, config=config, lam=lam, gamma=gamma)
     else:
         raise NotImplementedError
+    data.batch['advantages'] = advantages
+    data.batch['returns'] = returns
     return data
 
 
@@ -372,7 +384,7 @@ class RayPRIMETrainer(object):
             critic_cls = RayClassWithInitArgs(cls=self.role_worker_mapping[Role.Critic], config=self.config.critic)
             self.resource_pool_to_cls[resource_pool]['critic'] = critic_cls
             self.use_critic = True
-        elif self.config.algorithm.adv_estimator in ['rloo']:
+        elif self.config.algorithm.adv_estimator in ['rloo','remax','grpo','reinforce', 'gae_value']:
             self.use_critic = False
         else:
             raise NotImplementedError
@@ -491,7 +503,24 @@ class RayPRIMETrainer(object):
                             'n_samples': n_samples,
                         }
 
-                        gen_batch_output = self.actor_rollout_wg.generate_sequences(prompts=gen_batch)
+                        # some algorithms require a greedy sampling
+                        if self.config.algorithm.adv_estimator in ['remax']:
+                            gen_batch.meta_info['n_samples']-=1
+                            sampling_gen_batch_output=self.actor_rollout_wg.generate_sequences(prompts=gen_batch)
+                            gen_batch.meta_info['n_samples']=1
+                            gen_batch.meta_info['do_sample']=False
+                            greedy_gen_batch_output=self.actor_rollout_wg.generate_sequences(prompts=gen_batch)
+                            gen_batch_list = sum([[DataProto.concat([greedy_gen_batch_output[i:i+1], sampling_gen_batch_output[i*(n_samples-1):(i+1)*(n_samples-1)] ])]for i in range(0,len(greedy_gen_batch_output))],[])
+                            gen_batch_output=DataProto.concat(gen_batch_list)
+
+                            # do not change the original meta_info
+                            gen_batch.meta_info = {
+                                'eos_token_id': self.tokenizer.eos_token_id,
+                                'n_samples': n_samples,
+                                'do_sample': True
+                            }
+                        else:
+                            gen_batch_output = self.actor_rollout_wg.generate_sequences(prompts=gen_batch)
 
                         roll_batch = DataProto.concat(batch_lst)
                         roll_batch.pop(batch_keys=['input_ids', 'attention_mask', 'position_ids'])

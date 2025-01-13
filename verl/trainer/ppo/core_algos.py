@@ -66,6 +66,46 @@ def get_kl_controller(config):
     return kl_ctrl
 
 
+
+def compute_reinforce_returns(token_level_rewards: torch.Tensor, eos_mask: torch.Tensor, gamma: float):
+    """Compute returns for REINFORCE algorithm.
+
+    Args:
+        token_level_rewards: `(torch.Tensor)`
+            shape: (bs, response_length)
+        eos_mask: `(torch.Tensor)`
+            shape: (bs, response_length). [EOS] mask. The token after [EOS] have mask zero.
+        gamma: `(float)`
+            discounted factor used in RL
+
+    Returns:
+        returns: `(torch.Tensor)`
+            shape: (bs, response_length)
+        advantages: `(torch.Tensor)`
+            shape: (bs, response_length)
+    """
+    with torch.no_grad():
+        returns_reversed = []
+        gen_len = token_level_rewards.shape[-1]
+
+        for t in reversed(range(gen_len)):
+            if t == gen_len - 1:
+                next_return = 0.0
+            else:
+                next_return = returns_reversed[0]
+
+            current_return = token_level_rewards[:, t] + gamma * next_return
+            returns_reversed.insert(0, current_return)
+
+        returns = torch.stack(returns_reversed, dim=1)
+
+        # In REINFORCE, advantages are just returns (no baseline subtraction)
+        advantages = returns.clone()
+        # Optional: normalize advantages
+        advantages = verl_F.masked_whiten(advantages, eos_mask)
+
+    return advantages, returns
+
 def compute_gae_advantage_return(token_level_rewards: torch.Tensor, values: torch.Tensor, eos_mask: torch.Tensor,
                                  gamma: torch.Tensor, lam: torch.Tensor):
     """Adapted from https://github.com/huggingface/trl/blob/main/trl/trainer/ppo_trainer.py
@@ -105,16 +145,45 @@ def compute_gae_advantage_return(token_level_rewards: torch.Tensor, values: torc
         advantages = verl_F.masked_whiten(advantages, eos_mask)
     return advantages, returns
 
+def compute_gae_value_returns(data:verl.DataProto, eos_mask:torch.Tensor,n_samples,config, lam, gamma):
+    # use implicit prm as value model. this algorithm can be converted to a special gae estimator
+    # reward coefficient take no effect here.
+    # gamma is always 1.0
+    with torch.no_grad():
+        token_level_rewards = data.batch['gt_scores']
+        q = data.batch['rm_scores'].clone() # beta * logprob
+        lastgaelam = 0
+        advantages_reversed = []
+        gen_len = token_level_rewards.shape[-1]
+        prompt_ids = data.batch['prompts']
+        prompt_length = prompt_ids.shape[-1]
+        valid_response_length = data.batch['attention_mask'][:, prompt_length:].sum(-1)
+        # make q equal value: for t at eos, q equals reward-sum(q). for later t, q is zero
+        for i in range(q.shape[0]):
+            q[i,valid_response_length[i]-1]=q[i,:valid_response_length[i]-1].sum()
+            q[i,valid_response_length[i]-1:]=0
+
+        for t in reversed(range(gen_len)):
+            delta = q[:,t]
+            lastgaelam = delta + lam * lastgaelam
+            advantages_reversed.append(lastgaelam)
+        advantages = torch.stack(advantages_reversed[::-1], dim=1)
+
+        returns = torch.zeros_like(token_level_rewards)+token_level_rewards.sum(dim=-1,keepdim=True)
+        advantages = verl_F.masked_whiten(advantages, eos_mask)
+    return advantages, returns
+
+
+    pass
 def compute_rloo_returns(data:verl.DataProto, eos_mask:torch.Tensor,n_samples,config):
     # calculate rloo reward on different reward sources, and sum again
     with torch.no_grad():
-        # reward = torch.zeros_like(data.batch['responses'], dtype=torch.float32)
-        advantages = torch.zeros_like(data.batch['responses'],dtype=torch.float32)
         discount_rewards=[]
         for k,v in data.batch.items():
             if k == 'rm_scores':
                 gamma = config.algorithm.adv_params.reward_model_gamma
                 reward_mask = eos_mask.bool()
+                reward_weight = config.reward_model.rm_coef
             elif k == 'gt_scores':
                 gamma = config.algorithm.adv_params.verifier_gamma
                 prompt_ids = data.batch['prompts']
@@ -122,9 +191,12 @@ def compute_rloo_returns(data:verl.DataProto, eos_mask:torch.Tensor,n_samples,co
                 valid_response_length = data.batch['attention_mask'][:, prompt_length:].sum(-1)
                 reward_mask = torch.zeros_like(v, dtype=torch.bool)
                 reward_mask[torch.arange(0, valid_response_length.shape[0], dtype=torch.long, device=valid_response_length.device), valid_response_length-1]=True
+                reward_weight = config.verifier.reward_coef
             else: # not a reward tensor
                 continue
             reward_tensor = v.clone()
+            # add weighting here
+            reward_tensor*=reward_weight
             reward_tensor[~reward_mask]=0
             for start_pos in range(0, reward_tensor.shape[0], n_samples):
                 cur_rewards_mean = torch.cat(
@@ -151,6 +223,87 @@ def compute_rloo_returns(data:verl.DataProto, eos_mask:torch.Tensor,n_samples,co
         advantages = returns.clone()
         advantages = verl_F.masked_whiten(advantages, eos_mask)
     return advantages, returns
+
+def compute_grpo_returns(data:verl.DataProto, eos_mask:torch.Tensor,n_samples,config):
+    with torch.no_grad():
+
+        assert 'all' in data.batch
+        reward_mask = eos_mask.bool()
+        reward_tensor = data.batch['all'].clone()
+        reward_tensor[~reward_mask] = 0
+        for start_pos in range(0, reward_tensor.shape[0],n_samples):
+            group_reward_mean = reward_tensor[start_pos:start_pos + n_samples][reward_mask[start_pos:start_pos + n_samples]].mean()
+            group_reward_std = reward_tensor[start_pos:start_pos + n_samples][reward_mask[start_pos:start_pos + n_samples]].std()
+            reward_tensor[start_pos: start_pos+n_samples][reward_mask[start_pos:start_pos+n_samples]] = (reward_tensor[start_pos: start_pos+n_samples][reward_mask[start_pos:start_pos+n_samples]]-group_reward_mean)/(1e-6+group_reward_std)
+        # original grpo does not contain discoutning
+        returns = reward_tensor.flip(dims=[1]).cumsum(-1).flip(dims=[1])
+        advantages=verl_F.masked_whiten(returns, eos_mask)
+    return returns, advantages
+
+def compute_remax_returns(data:verl.DataProto, eos_mask:torch.Tensor,n_samples,config):
+    # if using remax, the first sample will always be the greedy sample. This logic will be added in the trainer class.
+    with torch.no_grad():
+        discount_rewards=[]
+        for k,v in data.batch.items():
+            if k == 'rm_scores':
+                gamma = config.algorithm.adv_params.reward_model_gamma
+                reward_mask = eos_mask.bool()
+                reward_weight = config.reward_model.rm_coef
+            elif k == 'gt_scores':
+                gamma = config.algorithm.adv_params.verifier_gamma
+                prompt_ids = data.batch['prompts']
+                prompt_length = prompt_ids.shape[-1]
+                valid_response_length = data.batch['attention_mask'][:, prompt_length:].sum(-1)
+                reward_mask = torch.zeros_like(v, dtype=torch.bool)
+                reward_mask[torch.arange(0, valid_response_length.shape[0], dtype=torch.long, device=valid_response_length.device), valid_response_length-1]=True
+                reward_weight = config.verifier.reward_coef
+            else: # not a reward tensor
+                continue
+            reward_tensor = v.clone()
+            # add weighting here
+            reward_tensor*=reward_weight
+            reward_tensor[~reward_mask]=0
+            for start_pos in range(0, reward_tensor.shape[0], n_samples):
+                cur_reward_baseline = reward_tensor[start_pos][ reward_mask[start_pos] ].mean()
+                reward_tensor[start_pos:start_pos + n_samples][
+                    reward_mask[start_pos:start_pos + n_samples]] -= cur_reward_baseline
+
+            discount_reward = torch.zeros_like(reward_tensor)
+            for step in reversed(range(reward_tensor.shape[1])):
+                if step == reward_tensor.shape[1]-1:
+                    discount_reward[:,step] = reward_tensor[:, step]
+                else:
+                    discount_reward[:,step] = reward_tensor[:, step] + gamma * discount_reward[:, step+1]
+            discount_rewards.append(discount_reward)
+        # return is the sum of discounted reward
+        returns = sum(discount_rewards)
+        # advantage is whitened return
+        advantages = returns.clone()
+        advantages = verl_F.masked_whiten(advantages, eos_mask)
+    return advantages, returns
+
+def compute_reinforce_policy_loss(old_log_prob, log_prob, advantages, eos_mask, cliprange):
+    """Compute policy loss for REINFORCE algorithm.
+
+    Args:
+        log_prob: `(torch.Tensor)`
+            shape: (bs, response_length)
+        advantages: `(torch.Tensor)`
+            shape: (bs, response_length)
+        eos_mask: `(torch.Tensor)`
+            shape: (bs, response_length)
+
+    Returns:
+        pg_loss: `a scalar torch.Tensor`
+            policy gradient loss computed via REINFORCE
+    """
+    # Simple policy gradient loss: -log_prob * advantages
+    pg_losses = -advantages * log_prob
+
+    # Average over non-padded tokens
+    pg_loss = verl_F.masked_mean(pg_losses, eos_mask)
+
+    return pg_loss, torch.tensor(0.0), torch.tensor(0.0)
 
 def compute_rewards(token_level_scores, old_log_prob, ref_log_prob, kl_ratio):
     kl = old_log_prob - ref_log_prob
