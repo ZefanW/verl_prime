@@ -18,7 +18,7 @@ COMBINE_PATH=$BASE_DIR/datasets/combine1203
 CODE_PATH=$BASE_DIR/datasets/code_1113_short
 SOLVABLE_NUMINA_PATH=/home/test/test05/cgq/data/numina_solvable
 PROJECT_NAME='o1_pr'
-EXPERIMENT_NAME='gt-prm-rloo-abla'
+EXPERIMENT_NAME='gt-prm-rloo-abla-real'
 # ablation部分，取消online，取消filter，视情况保留critic
 
 python3 -m verl.trainer.main_ppo \

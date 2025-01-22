@@ -18,7 +18,8 @@ COMBINE_PATH=$BASE_DIR/datasets/combine1203
 CODE_PATH=$BASE_DIR/datasets/code_1113_short
 SOLVABLE_NUMINA_PATH=/home/test/test05/cgq/data/numina_solvable
 PROJECT_NAME='o1_pr'
-EXPERIMENT_NAME='gt-prm-online-before-solvable-0.2-0.8-ppo'
+EXPERIMENT_NAME='gt-prm-vae-value-lam095-abla'
+# ablation部分，取消online，取消filter，视情况保留critic
 
 python3 -m verl.trainer.main_ppo \
     data.train_files=["$SOLVABLE_NUMINA_PATH/train.parquet","$CODE_PATH/train.parquet"] \
@@ -42,9 +43,7 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.ref.log_prob_micro_batch_size=64 \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
     algorithm.kl_ctrl.kl_coef=0.00 \
-    critic.model.path=/home/test/test04/yuanjiarui/o1-sft/saves/qwen_all_abla_numina_oly_orca/full/qwen_all_abla_numina_oly_orca \
-    critic.ppo_micro_batch_size=8 \
-    critic.optim.lr=1e-6 \
+    algorithm.lam=0.95 \
     trainer.logger=['console','wandb'] \
     trainer.project_name=$PROJECT_NAME \
     trainer.experiment_name=$EXPERIMENT_NAME \
@@ -55,11 +54,20 @@ python3 -m verl.trainer.main_ppo \
     trainer.test_freq=16 \
     trainer.total_epochs=1 \
     data.n_samples=4 \
-    data.filter_accuracy=True \
-    data.accuracy_lower_bound=0.2 \
-    data.accuracy_upper_bound=0.8 \
-    algorithm.adv_estimator=gae \
+    data.filter_accuracy=False \
+    algorithm.adv_estimator=gae_value \
     algorithm.adv_params.verifier_gamma=1.0 \
-    reward_model.rm_coef=0 \
+    algorithm.adv_params.reward_model_gamma=1.0 \
+    reward_model.rm_type=prime \
+    reward_model.rm_coef=5 \
+    reward_model.prime_model.path=/home/test/test05/wzf/huggingface/1214_qwen_dedup_top8_ce_old_new_math_syn_olymiads_beta005_lr5e-7 \
+    reward_model.prime_model.ref_path=/home/test/test05/wzf/huggingface/Qwen2.5-Math-7B-Instruct \
+    reward_model.model.input_tokenizer=null \
+    reward_model.prime_granularity=token \
+    reward_model.micro_batch_size=8 \
+    reward_model.prime_model.update=none \
+    reward_model.prime_model.optim.grad_clip=10.0 \
+    reward_model.prime_model.input_tokenizer=null \
+    reward_model.prime_norm=none \
     trainer.default_local_dir=$BASE_DIR/checkpoints/$PROJECT_NAME/$EXPERIMENT_NAME \
 
