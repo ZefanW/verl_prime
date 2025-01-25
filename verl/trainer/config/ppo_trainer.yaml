@@ -20,17 +20,21 @@ actor_rollout_ref:
   model:
     path: ~/models/deepseek-llm-7b-chat
     external_lib: null
-    override_config: {}
+    override_config: { }
     enable_gradient_checkpointing: False
+    use_remove_padding: False
   actor:
     strategy: fsdp  # This is for backward-compatibility
     ppo_mini_batch_size: 256
     ppo_micro_batch_size: 64
+    use_dynamic_bsz: False
+    ppo_max_token_len_per_gpu: 16384 # n * ${data.max_prompt_length} + ${data.max_response_length}
     grad_clip: 1.0
     clip_ratio: 0.2
     entropy_coeff: 0.001
     ppo_epochs: 1
-    shuffle: True
+    shuffle: False
+    ulysses_sequence_parallel_size: 1 # sp size
     optim:
       lr: 1e-6
       lr_warmup_steps_ratio: 0.  # the total steps will be injected during runtime
@@ -44,13 +48,18 @@ actor_rollout_ref:
       param_offload: False
       grad_offload: False
       optimizer_offload: False
+      fsdp_size: -1
   ref:
     fsdp_config:
       param_offload: False
       wrap_policy:
         # transformer_layer_cls_to_wrap: None
         min_num_params: 0
+      fsdp_size: -1
     log_prob_micro_batch_size: 128
+    log_prob_use_dynamic_bsz: ${actor_rollout_ref.actor.use_dynamic_bsz}
+    log_prob_max_token_len_per_gpu: ${actor_rollout_ref.actor.ppo_max_token_len_per_gpu}
+    ulysses_sequence_parallel_size: ${actor_rollout_ref.actor.ulysses_sequence_parallel_size} # sp size
   rollout:
     name: vllm
     temperature: 1.0
@@ -69,8 +78,12 @@ actor_rollout_ref:
     max_num_batched_tokens: 8192
     max_num_seqs: 1024
     log_prob_micro_batch_size: 128
+    log_prob_use_dynamic_bsz: ${actor_rollout_ref.actor.use_dynamic_bsz}
+    log_prob_max_token_len_per_gpu: ${actor_rollout_ref.actor.ppo_max_token_len_per_gpu}
     # for hf rollout
     do_sample: True
+    # number of responses (i.e. num sample times)
+    n: 1 # > 1 for grpo
 
 critic:
   strategy: fsdp
@@ -83,8 +96,9 @@ critic:
   model:
     path: ~/models/deepseek-llm-7b-chat
     tokenizer_path: ${actor_rollout_ref.model.path}
-    override_config: {}
+    override_config: { }
     external_lib: ${actor_rollout_ref.model.external_lib}
+    use_remove_padding: ${actor_rollout_ref.model.use_remove_padding}
     enable_gradient_checkpointing: ${actor_rollout_ref.model.enable_gradient_checkpointing}
     fsdp_config:
       param_offload: ${actor_rollout_ref.actor.fsdp_config.param_offload}
@@ -93,9 +107,15 @@ critic:
       wrap_policy:
         # transformer_layer_cls_to_wrap: None
         min_num_params: 0
+      fsdp_size: -1
     type: value # if set to implicit, this will become an implicit PRM which updates according to gt. this only supports initializing from the reference model currently.
   ppo_mini_batch_size: ${actor_rollout_ref.actor.ppo_mini_batch_size}
   ppo_micro_batch_size: 64
+  forward_micro_batch_size: ${critic.ppo_micro_batch_size}
+  use_dynamic_bsz: ${actor_rollout_ref.actor.use_dynamic_bsz}
+  ppo_max_token_len_per_gpu: 32768 # (${actor_rollout_ref.actor.ppo_max_token_len_per_gpu}) * 2
+  forward_max_token_len_per_gpu: ${critic.ppo_max_token_len_per_gpu}
+  ulysses_sequence_parallel_size: ${actor_rollout_ref.actor.ulysses_sequence_parallel_size} # sp size
   ppo_epochs: ${actor_rollout_ref.actor.ppo_epochs}
   shuffle: ${actor_rollout_ref.actor.shuffle}
   grad_clip: 1.0
@@ -115,12 +135,16 @@ reward_model:
     input_tokenizer: ${actor_rollout_ref.model.path}  # set this to null if the chat template is identical
     path: ~/models/FsfairX-LLaMA3-RM-v0.1
     external_lib: ${actor_rollout_ref.model.external_lib}
+    use_remove_padding:  ${actor_rollout_ref.model.use_remove_padding}
     fsdp_config:
       min_num_params: 0
       param_offload: False
   mini_batch_size: ${actor_rollout_ref.actor.ppo_mini_batch_size}
   micro_batch_size: 64
   max_length: null
+  ulysses_sequence_parallel_size: ${actor_rollout_ref.actor.ulysses_sequence_parallel_size} # sp size
+  use_dynamic_bsz: ${critic.use_dynamic_bsz}
+  forward_max_token_len_per_gpu: ${critic.forward_max_token_len_per_gpu}
   rm_coef: 0 # weight for the reward model
   rm_type: value # set to prime for process reward
   # configurations for process rewards of prime
@@ -133,6 +157,7 @@ reward_model:
     ref_path: /data/public/wangshuo/LongContext/model/meta-llama/Llama3.1-8b-instruct
     external_lib: ${actor_rollout_ref.model.external_lib}
     enable_gradient_checkpointing: ${actor_rollout_ref.model.enable_gradient_checkpointing}
+    use_remove_padding:  ${actor_rollout_ref.model.use_remove_padding}
     fsdp_config:
       wrap_policy:
         min_num_params: 0
@@ -169,14 +194,16 @@ algorithm:
 
 trainer:
   total_epochs: 30
+  total_training_steps: null
   project_name: verl_examples
   experiment_name: gsm8k
-  logger: ['console', 'wandb']
+  logger: [ 'console', 'wandb' ]
   nnodes: 1
   n_gpus_per_node: 8
   save_freq: -1
-  test_freq: 2
+  test_freq: -1
   critic_warmup: 0
   default_hdfs_dir: ~/experiments/gsm8k/ppo/${trainer.experiment_name}
   default_local_dir: checkpoints/${trainer.project_name}/${trainer.experiment_name}
   runtime_env: none
+  val_before_train: True
