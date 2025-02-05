@@ -19,8 +19,8 @@ mkdir -p $OUTPUT_DIR
 # 测试数据集，只测试my_array里的数据集
 # my_array=(math500)
 # my_array=(aime amc qwen math)
-my_array=(aime amc math500 qwen leetcode livecodebench) # 注意，只有这些测试被改过了读取prompt的地址！
-#my_array=( livecodebench)
+#my_array=(aime amc math500 qwen leetcode ) # 注意，只有这些测试被改过了读取prompt的地址！
+my_array=( livecodebench)
 #my_array=( leetcode)
 
 cd /home/test/test05/wzf/PRIME/eval
