@@ -58,7 +58,15 @@ async def parallel_evaluate_continual_async(completions, references, tasks, num_
             for completion, reference, task in zip(completions, references, tasks)
         ]
         # Use tqdm for progress tracking
-        results = await tqdm.gather(*tasks_async, disable=True)
+        try:
+            results = await asyncio.gather(*tasks_async, return_exceptions=False)
+        except Exception as exc:
+            print('Error encountered in parallel evaluation! now shutting all evaluation workers down to prevent starvation')
+            for pid, proc in executor._processes.items():
+                try:
+                    proc.kill()
+                except Exception as kill_err:
+                    print('shut down failed: '+str(kill_err))
 
     # Process results
     for result, completion, reference, task in zip(results, completions, references, tasks):
