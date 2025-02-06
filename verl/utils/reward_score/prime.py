@@ -11,6 +11,7 @@ from .evaluation_utils.code_util import evaluate_code
 from .evaluation_utils.math_util import evaluate_math
 from tqdm.asyncio import tqdm
 
+
 def process_completion(completion, task, reference):
     if task == "code":
         return evaluate_code(completion, reference)
@@ -20,6 +21,7 @@ def process_completion(completion, task, reference):
         print('task')
         raise NotImplementedError
 
+
 async def process_row_with_timeout(completion, reference, task, executor, timeout=300.0):
     """
     Process a single row with a timeout.
@@ -27,13 +29,13 @@ async def process_row_with_timeout(completion, reference, task, executor, timeou
     loop = asyncio.get_running_loop()
     try:
         # Ensure process_completion is called properly
-        tasks = [asyncio.wait_for(
-            loop.run_in_executor(
-                executor,
-                partial(process_completion, completion, task, reference)  # Ensure synchronous
-            ),
-            timeout=timeout
-        )
+        tasks = [
+            asyncio.wait_for(
+                loop.run_in_executor(
+                    executor,
+                    partial(process_completion, completion, task, reference)  # Ensure synchronous
+                ),
+                timeout=timeout)
         ]
         return await asyncio.gather(*tasks)
     except asyncio.TimeoutError:
@@ -42,6 +44,7 @@ async def process_row_with_timeout(completion, reference, task, executor, timeou
     except Exception as e:
         print(f"Error processing completion: {completion[:10]}, Error: {e}")
         return None  # Default value for failed rows
+
 
 async def parallel_evaluate_continual_async(completions, references, tasks, num_processes, task_timeout=300.0):
     """
@@ -66,9 +69,11 @@ async def parallel_evaluate_continual_async(completions, references, tasks, num_
 
         try:
             # Process result based on task type
-            if task == 'code' and not result[0][0]: # if task is code, the reference should be json string
+            if task == 'code' and not result[0][0]:  # if task is code, the reference should be json string
                 correct = 0
-                total = min(len(json.loads(reference)['inputs'] if not isinstance(reference,dict) else reference['inputs']), 10)
+                total = min(
+                    len(json.loads(reference)['inputs'] if not isinstance(reference, dict) else reference['inputs']),
+                    10)
                 for run in result[0][1]:
                     if 'test_case' in run and 'res' in run['test_case'] and run['test_case']['res'] == '[True]':
                         correct += 1
@@ -80,6 +85,8 @@ async def parallel_evaluate_continual_async(completions, references, tasks, num_
             scores.append(0.0)
 
     return scores
+
+
 def compute_score(completions, references, tasks):
     # three lists should have identical length
     # TODO: make this one completely asynchronous, which means the main process can do other things(e.g., forwarding reward model) while computing score

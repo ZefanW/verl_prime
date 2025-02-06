@@ -26,10 +26,7 @@ def _sympy_parse(expr: str):
     py_expr = expr.replace("^", "**")
     return sympy_parser.parse_expr(
         py_expr,
-        transformations=(
-            sympy_parser.standard_transformations
-            + (sympy_parser.implicit_multiplication_application,)
-        ),
+        transformations=(sympy_parser.standard_transformations + (sympy_parser.implicit_multiplication_application,)),
     )
 
 
@@ -128,23 +125,23 @@ def _normalize(expr: str) -> str:
     expr = expr.replace("trillion", "*10^12")
 
     for unit in [
-        "degree",
-        "cm",
-        "centimeter",
-        "meter",
-        "mile",
-        "second",
-        "minute",
-        "hour",
-        "day",
-        "week",
-        "month",
-        "year",
-        "foot",
-        "feet",
-        "inch",
-        "yard",
-        "liter",
+            "degree",
+            "cm",
+            "centimeter",
+            "meter",
+            "mile",
+            "second",
+            "minute",
+            "hour",
+            "day",
+            "week",
+            "month",
+            "year",
+            "foot",
+            "feet",
+            "inch",
+            "yard",
+            "liter",
     ]:
         expr = re.sub(f"{unit}(es)?(s)? *(\^[0-9]+)?", "", expr)
     expr = re.sub(f"\^ *\\\\circ", "", expr)
@@ -225,12 +222,8 @@ def split_tuple(expr: str):
     expr = _strip_properly_formatted_commas(expr)
     if len(expr) == 0:
         return []
-    if (
-        len(expr) > 2
-        and expr[0] in TUPLE_CHARS
-        and expr[-1] in TUPLE_CHARS
-        and all([ch not in expr[1:-1] for ch in TUPLE_CHARS])
-    ):
+    if (len(expr) > 2 and expr[0] in TUPLE_CHARS and expr[-1] in TUPLE_CHARS and
+            all([ch not in expr[1:-1] for ch in TUPLE_CHARS])):
         elems = [elem.strip() for elem in expr[1:-1].split(",")]
     else:
         elems = [expr]
@@ -269,10 +262,8 @@ def grade_answer(given_answer: str, ground_truth: str) -> bool:
     ground_truth_elems = split_tuple(ground_truth_normalized)
     given_elems = split_tuple(given_normalized)
 
-    if len(ground_truth_elems) > 1 and (
-        ground_truth_normalized[0] != given_normalized[0]
-        or ground_truth_normalized[-1] != given_normalized[-1]
-    ):
+    if len(ground_truth_elems) > 1 and (ground_truth_normalized[0] != given_normalized[0] or
+                                        ground_truth_normalized[-1] != given_normalized[-1]):
         is_correct = False
     elif len(ground_truth_elems) != len(given_elems):
         is_correct = False
@@ -292,6 +283,7 @@ def grade_answer(given_answer: str, ground_truth: str) -> bool:
 
     return is_correct
 
+
 def remove_boxed(s):
     left = "\\boxed{"
     try:
@@ -301,34 +293,36 @@ def remove_boxed(s):
     except:
         return None
 
+
 def _last_boxed_only_string(string):
-        idx = string.rfind("\\boxed")
+    idx = string.rfind("\\boxed")
+    if idx < 0:
+        idx = string.rfind("\\fbox")
         if idx < 0:
-            idx = string.rfind("\\fbox")
-            if idx < 0:
-                return None
-
-        i = idx
-        left_brace_idx = None
-        right_brace_idx = None
-        num_left_braces_open = 0
-        while i < len(string):
-            if string[i] == "{":
-                num_left_braces_open += 1
-                if left_brace_idx is None:
-                    left_brace_idx = i
-            elif string[i] == "}":
-                num_left_braces_open -= 1
-                if num_left_braces_open == 0:
-                    right_brace_idx = i
-                    break
-
-            i += 1
-        
-        if left_brace_idx is None or right_brace_idx is None:
             return None
 
-        return string[left_brace_idx + 1: right_brace_idx].strip()
+    i = idx
+    left_brace_idx = None
+    right_brace_idx = None
+    num_left_braces_open = 0
+    while i < len(string):
+        if string[i] == "{":
+            num_left_braces_open += 1
+            if left_brace_idx is None:
+                left_brace_idx = i
+        elif string[i] == "}":
+            num_left_braces_open -= 1
+            if num_left_braces_open == 0:
+                right_brace_idx = i
+                break
+
+        i += 1
+
+    if left_brace_idx is None or right_brace_idx is None:
+        return None
+
+    return string[left_brace_idx + 1:right_brace_idx].strip()
+
 
 def match_answer(response):
     is_matched = False
@@ -339,7 +333,7 @@ def match_answer(response):
             response = response[ans_idx + len(ans_marker):].strip()
             if response.endswith("\n"):
                 response = response[:-2]
-    
+
     for ans_marker in ["is answer", "is the answer", "are answers", "are the answers"]:
         ans_idx = response.lower().rfind(ans_marker)
         if ans_idx != -1:
@@ -353,13 +347,13 @@ def match_answer(response):
     if ans_boxed:
         is_matched = True
         response = ans_boxed
-    
+
     if ". " in response:
         dot_idx = response.lower().rfind(". ")
         if dot_idx != -1:
             response = response[:dot_idx].strip()
-    
-    for ans_marker in ['be ', "is ", "are ", "=", ": ", "get ", 'be\n', "is\n", "are\n",  ":\n", "get\n"]:
+
+    for ans_marker in ['be ', "is ", "are ", "=", ": ", "get ", 'be\n', "is\n", "are\n", ":\n", "get\n"]:
         ans_idx = response.lower().rfind(ans_marker)
         if ans_idx != -1:
             is_matched = True
@@ -367,12 +361,14 @@ def match_answer(response):
             if response.endswith("\n"):
                 response = response[:-2]
 
-    is_matched = is_matched if any([c.isdigit() for c in response]) else False # answer must have a digit
+    is_matched = is_matched if any([c.isdigit() for c in response]) else False  # answer must have a digit
     # Grade
     return is_matched, response
 
 
 import math
+
+
 def evaluate_math(model_output: str, ground_truth: str) -> bool:
     model_output = str(model_output)
     ground_truth = str(ground_truth)
@@ -391,21 +387,18 @@ def evaluate_math(model_output: str, ground_truth: str) -> bool:
     if grade_answer(extracted_model_output, ground_truth):
         return True, True, extracted_model_output
         # return True
-    
+
     try:
         if "\pi" in extracted_model_output or "\pi" in ground_truth:
             equivs = []
             for pi in [math.pi, 3.14]:
                 equivs.append(math_equal(extracted_model_output, ground_truth, timeout=True, pi=pi))
-            is_correct = any(equivs) 
+            is_correct = any(equivs)
         else:
             is_correct = math_equal(extracted_model_output, ground_truth, timeout=True)
     except:
         is_correct = False
-    
+
     # print(f"{extracted_model_output=}\n", f"{model_output=}\n", f"{ground_truth=}\n")
-    
+
     return is_correct, format_correctness, extracted_model_output
-
-
-

@@ -71,15 +71,12 @@
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
-
-
 """
 This logic is largely copied from the Hendrycks' MATH release (math_equivalence), and borrowed from:
 - https://github.com/microsoft/ToRA/blob/main/src/eval/grader.py
 - https://github.com/microsoft/ProphetNet/tree/master/CRITIC
 - https://github.com/openai/prm800k
 """
-
 
 import contextlib
 import re
@@ -111,11 +108,10 @@ def normalize(answer, pi) -> str:
         return answer[1:]
 
     # checking if answer is <number>% or <number>\\% and removing %
-    if isinstance(answer, str) and (
-        bool(re.match(r'^\d+(\.\d+)?%$', answer)) or bool(re.match(r'^\d+(\.\d+)?\\%$', answer))
-    ):
+    if isinstance(answer, str) and (bool(re.match(r'^\d+(\.\d+)?%$', answer)) or
+                                    bool(re.match(r'^\d+(\.\d+)?\\%$', answer))):
         return answer.replace("\\%", "").replace("%", "")
-    
+
     # handle base
     answer = handle_base(answer)
 
@@ -123,6 +119,7 @@ def normalize(answer, pi) -> str:
     answer = handle_pi(answer, pi)
 
     return answer
+
 
 def handle_base(x) -> str:
     if isinstance(x, str) and "_" in x:
@@ -142,12 +139,12 @@ def handle_pi(string, pi):
         # Iterate over the string and find all occurrences of "\pi" with a valid previous character
         while idx != -1:
 
-            if idx > 0 and string[idx-1].isdigit():
+            if idx > 0 and string[idx - 1].isdigit():
                 # Replace "\pi" with "*math.pi" if the previous character is a digit
-                string = string[:idx] + f"*{pi}" + string[idx+3:]
+                string = string[:idx] + f"*{pi}" + string[idx + 3:]
             else:
                 # Replace "\pi" with "1*math.pi" if the previous character is not a digit
-                string = string[:idx] + f"1*{pi}" + string[idx+3:]
+                string = string[:idx] + f"1*{pi}" + string[idx + 3:]
 
             # Find the next occurrence of "\pi"
             idx = string.find("\pi", idx + 1)
@@ -157,17 +154,16 @@ def handle_pi(string, pi):
             string = eval(string)
         except:
             pass
-            
+
     return string
 
-def math_equal(
-    prediction: Union[bool, float, str],
-    reference: Union[float, str],
-    include_percentage: bool = True,
-    tolerance: float = 1e-4,
-    timeout: float = 10.0,
-    pi: float = math.pi
-) -> bool:
+
+def math_equal(prediction: Union[bool, float, str],
+               reference: Union[float, str],
+               include_percentage: bool = True,
+               tolerance: float = 1e-4,
+               timeout: float = 10.0,
+               pi: float = math.pi) -> bool:
     """
     Exact match of math if and only if:
     1. numerical equal: both can convert to float and are equal
@@ -217,9 +213,9 @@ def math_equal(
     prediction = format_intervals(prediction)
 
     pred_str, ref_str = prediction, reference
-    if (prediction.startswith("[") and prediction.endswith("]") and not reference.startswith("(")) or (
-        prediction.startswith("(") and prediction.endswith(")") and not reference.startswith("[")
-    ):
+    if (prediction.startswith("[") and prediction.endswith("]") and
+            not reference.startswith("(")) or (prediction.startswith("(") and prediction.endswith(")") and
+                                               not reference.startswith("[")):
         pred_str = pred_str.strip("[]()")
         ref_str = ref_str.strip("[]()")
     for s in ["{", "}", "(", ")"]:
@@ -229,23 +225,15 @@ def math_equal(
         return True
 
     ## [a, b] vs. [c, d], return a==c and b==d
-    if (
-        prediction
-        and reference
-        and prediction[0] in "(["
-        and prediction[-1] in ")]"
-        and prediction[0] == reference[0]
-        and prediction[-1] == reference[-1]
-    ):
+    if (prediction and reference and prediction[0] in "([" and prediction[-1] in ")]" and
+            prediction[0] == reference[0] and prediction[-1] == reference[-1]):
         pred_parts = prediction[1:-1].split(",")
         ref_parts = reference[1:-1].split(",")
         if len(pred_parts) == len(ref_parts):
-            if all(
-                [
+            if all([
                     math_equal(pred_pt, ref_pt, include_percentage, tolerance)
                     for pred_pt, ref_pt in zip(pred_parts, ref_parts)
-                ]
-            ):
+            ]):
                 return True
 
     if "," in prediction and "," in reference:
@@ -253,27 +241,23 @@ def math_equal(
         ref_parts = [item.strip() for item in reference.split(",")]
 
         if len(pred_parts) == len(ref_parts):
-            if all(
-                [
+            if all([
                     math_equal(pred_parts[i], ref_parts[i], include_percentage, tolerance)
                     for i in range(len(pred_parts))
-                ]
-            ):
+            ]):
                 return True
             else:
                 return False
 
     # if we have point == tuple of values
     if prediction.startswith("Point") and reference[0] == "(" and reference[-1] == ")":
-        pred_parts = prediction[prediction.find("(") + 1 : -1].split(",")
+        pred_parts = prediction[prediction.find("(") + 1:-1].split(",")
         ref_parts = reference[1:-1].split(",")
         if len(pred_parts) == len(ref_parts):
-            if all(
-                [
+            if all([
                     math_equal(pred_pt, ref_pt, include_percentage, tolerance)
                     for pred_pt, ref_pt in zip(pred_parts, ref_parts)
-                ]
-            ):
+            ]):
                 return True
 
     # if reference is a matrix
@@ -282,12 +266,10 @@ def math_equal(
             pred_matrix = parse_expr(prediction)
             ref_matrix_items = reference.split()[1:-1:2]
             if len(pred_matrix) == len(ref_matrix_items):
-                if all(
-                    [
+                if all([
                         math_equal(pred, ref, include_percentage, tolerance)
                         for ref, pred in zip(ref_matrix_items, pred_matrix)
-                    ]
-                ):
+                ]):
                     return True
         except Exception:
             pass
@@ -296,16 +278,15 @@ def math_equal(
             try:
                 pred_matrix = eval(prediction)
                 # ref_matrix_items = reference.split()[1:-1:2]
-                ref_matrix_items = reference.lstrip("\\begin{pmatrix}").lstrip("\begin{pmatrix}").rstrip("\\end{pmatrix}").rstrip("\end{pmatrix}")
+                ref_matrix_items = reference.lstrip("\\begin{pmatrix}").lstrip("\begin{pmatrix}").rstrip(
+                    "\\end{pmatrix}").rstrip("\end{pmatrix}")
                 ref_matrix_items = ref_matrix_items.split("\\")
                 ref_matrix_items = [row.split("&") if "&" in row else row for row in ref_matrix_items]
                 if len(pred_matrix) == len(ref_matrix_items):
-                    if all(
-                        [
+                    if all([
                             math_equal(pred, ref, include_percentage, tolerance)
                             for ref, pred in zip(ref_matrix_items, pred_matrix)
-                        ]
-                    ):
+                    ]):
                         return True
             except Exception:
                 pass
@@ -314,6 +295,7 @@ def math_equal(
 
 
 def symbolic_equal(a, b, tolerance, timeout=10.0):
+
     def _parse(s):
         for f in [parse_expr, parse_latex]:
             try:
@@ -348,6 +330,7 @@ class TimeoutException(Exception):
 
 @contextlib.contextmanager
 def time_limit(seconds: float):
+
     def signal_handler(signum, frame):
         raise TimeoutException("Timed out!")
 

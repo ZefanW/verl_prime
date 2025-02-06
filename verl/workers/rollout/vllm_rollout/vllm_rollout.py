@@ -145,10 +145,10 @@ class vLLMRollout(BaseRollout):
             self.inference_engine.init_cache_engine()
 
         n_samples = prompts.meta_info.get('n_samples', 1)
-        idx = prompts.batch['input_ids'].repeat_interleave(n_samples,dim=0)  # (bs, prompt_length)
+        idx = prompts.batch['input_ids'].repeat_interleave(n_samples, dim=0)  # (bs, prompt_length)
         # left-padded attention_mask
-        attention_mask = prompts.batch['attention_mask'].repeat_interleave(n_samples,dim=0)
-        position_ids = prompts.batch['position_ids'].repeat_interleave(n_samples,dim=0)
+        attention_mask = prompts.batch['attention_mask'].repeat_interleave(n_samples, dim=0)
+        position_ids = prompts.batch['position_ids'].repeat_interleave(n_samples, dim=0)
 
         # used to construct attention_mask
         eos_token_id = prompts.meta_info['eos_token_id']

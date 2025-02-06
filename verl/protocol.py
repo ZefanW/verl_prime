@@ -203,7 +203,6 @@ class DataProto:
         for key, val in self.batch.items():
             self.batch[key] = val.narrow(start=start, length=length, dim=dim)
 
-
     def __getstate__(self):
         import io
         buffer = io.BytesIO()

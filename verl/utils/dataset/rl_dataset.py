@@ -148,6 +148,7 @@ class RLHFDataset(Dataset):
 
 
 class BufferedDataLoader:
+
     def __init__(self, dataloader):
         self.dataloader = dataloader
         self.batch_size = dataloader.batch_size

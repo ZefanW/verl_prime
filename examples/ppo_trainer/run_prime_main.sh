@@ -18,7 +18,7 @@ COMBINE_PATH=$BASE_DIR/datasets/combine1203
 CODE_PATH=$BASE_DIR/datasets/code_1113_short
 SOLVABLE_NUMINA_PATH=/home/test/test05/cgq/data/numina_solvable
 PROJECT_NAME='o1_pr'
-EXPERIMENT_NAME='gt-prm-online-before-solvable-0.2-0.8-gamma095'
+EXPERIMENT_NAME='gt-prm-online-before-solvable-0-1'
 
 python3 -m verl.trainer.main_ppo \
     data.train_files=["$SOLVABLE_NUMINA_PATH/train.parquet","$CODE_PATH/train.parquet"] \

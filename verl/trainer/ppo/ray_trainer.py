@@ -123,7 +123,8 @@ def compute_advantage(data: DataProto, gamma, lam, adv_estimator, config):
     response_length = responses.size(1)
     attention_mask = data.batch['attention_mask']
     response_mask = attention_mask[:, -response_length:]
-    token_level_rewards = data.batch['token_level_rewards'] if 'token_level_rewards' in list(data.batch.keys()) else data.batch['token_level_scores']
+    token_level_rewards = data.batch['token_level_rewards'] if 'token_level_rewards' in list(
+        data.batch.keys()) else data.batch['token_level_scores']
 
     # TODO: add other ways to estimate advantages
     if adv_estimator == 'gae':
@@ -138,21 +139,32 @@ def compute_advantage(data: DataProto, gamma, lam, adv_estimator, config):
         # prompt_length = prompt_ids.shape[-1]
         # valid_response_length = data.batch['attention_mask'][:,prompt_length:].sum(-1)
         advantages, returns = core_algos.compute_rloo_returns(data=data,
-                                                eos_mask=response_mask,n_samples=config.data.n_samples, config=config)
+                                                              eos_mask=response_mask,
+                                                              n_samples=config.data.n_samples,
+                                                              config=config)
     elif adv_estimator == 'grpo':
         advantages, returns = core_algos.compute_grpo_returns(data=data,
-                                                eos_mask=response_mask,n_samples=config.data.n_samples, config=config)
+                                                              eos_mask=response_mask,
+                                                              n_samples=config.data.n_samples,
+                                                              config=config)
     elif adv_estimator == 'reinforce':
-        advantages, returns = core_algos.compute_reinforce_returns(token_level_rewards=token_level_rewards,
-                                                                      eos_mask=response_mask,
-                                                                      gamma=gamma,
-                                                                      )
+        advantages, returns = core_algos.compute_reinforce_returns(
+            token_level_rewards=token_level_rewards,
+            eos_mask=response_mask,
+            gamma=gamma,
+        )
     elif adv_estimator == 'remax':
         advantages, returns = core_algos.compute_remax_returns(data=data,
-                                                eos_mask=response_mask,n_samples=config.data.n_samples, config=config)
-    elif adv_estimator =='gae_value':
+                                                               eos_mask=response_mask,
+                                                               n_samples=config.data.n_samples,
+                                                               config=config)
+    elif adv_estimator == 'gae_value':
         advantages, returns = core_algos.compute_gae_value_returns(data=data,
-                                                eos_mask=response_mask,n_samples=config.data.n_samples, config=config, lam=lam, gamma=gamma)
+                                                                   eos_mask=response_mask,
+                                                                   n_samples=config.data.n_samples,
+                                                                   config=config,
+                                                                   lam=lam,
+                                                                   gamma=gamma)
     else:
         raise NotImplementedError
     data.batch['advantages'] = advantages
@@ -325,11 +337,12 @@ class RayPRIMETrainer(object):
                                          filter_prompts=True,
                                          return_raw_chat=self.config.data.get('return_raw_chat', False),
                                          truncation='error')
-        self.train_dataloader = BufferedDataLoader(DataLoader(dataset=self.train_dataset,
-                                           batch_size=int(self.config.data.train_batch_size*self.config.data.oversample_factor),
-                                           shuffle=True,
-                                           drop_last=True,
-                                           collate_fn=collate_fn))
+        self.train_dataloader = BufferedDataLoader(
+            DataLoader(dataset=self.train_dataset,
+                       batch_size=int(self.config.data.train_batch_size * self.config.data.oversample_factor),
+                       shuffle=True,
+                       drop_last=True,
+                       collate_fn=collate_fn))
 
         self.val_dataset = RLHFDataset(parquet_files=self.config.data.val_files,
                                        tokenizer=self.tokenizer,
@@ -397,7 +410,7 @@ class RayPRIMETrainer(object):
             # evaluate using reward_function
             # for certain reward function (e.g. sandbox), the generation can overlap with reward
             verifier_score, reward_metrics = self.val_reward_fn.verify(test_batch)
-            reward_tensor=torch.tensor(verifier_score, dtype=torch.float32).unsqueeze(-1)
+            reward_tensor = torch.tensor(verifier_score, dtype=torch.float32).unsqueeze(-1)
 
             for k, v in reward_metrics.items():
                 metric_dict['test_reward/' + k] = v
@@ -419,7 +432,7 @@ class RayPRIMETrainer(object):
         for data_source, rewards in data_source_reward.items():
             metric_dict[f'test_score/{data_source}'] = np.mean(rewards)
 
-        metric_dict[f'test_score/all']=reward_tensor.mean().item()
+        metric_dict[f'test_score/all'] = reward_tensor.mean().item()
 
         return metric_dict
 
@@ -445,7 +458,7 @@ class RayPRIMETrainer(object):
             critic_cls = RayClassWithInitArgs(cls=self.role_worker_mapping[Role.Critic], config=self.config.critic)
             self.resource_pool_to_cls[resource_pool]['critic'] = critic_cls
             self.use_critic = True
-        elif self.config.algorithm.adv_estimator in ['rloo','remax','grpo','reinforce', 'gae_value']:
+        elif self.config.algorithm.adv_estimator in ['rloo', 'remax', 'grpo', 'reinforce', 'gae_value']:
             self.use_critic = False
         else:
             raise NotImplementedError
@@ -597,13 +610,18 @@ class RayPRIMETrainer(object):
 
                         # some algorithms require a greedy sampling
                         if self.config.algorithm.adv_estimator in ['remax']:
-                            gen_batch.meta_info['n_samples']-=1
-                            sampling_gen_batch_output=self.actor_rollout_wg.generate_sequences(prompts=gen_batch)
-                            gen_batch.meta_info['n_samples']=1
-                            gen_batch.meta_info['do_sample']=False
-                            greedy_gen_batch_output=self.actor_rollout_wg.generate_sequences(prompts=gen_batch)
-                            gen_batch_list = sum([[DataProto.concat([greedy_gen_batch_output[i:i+1], sampling_gen_batch_output[i*(n_samples-1):(i+1)*(n_samples-1)] ])]for i in range(0,len(greedy_gen_batch_output))],[])
-                            gen_batch_output=DataProto.concat(gen_batch_list)
+                            gen_batch.meta_info['n_samples'] -= 1
+                            sampling_gen_batch_output = self.actor_rollout_wg.generate_sequences(prompts=gen_batch)
+                            gen_batch.meta_info['n_samples'] = 1
+                            gen_batch.meta_info['do_sample'] = False
+                            greedy_gen_batch_output = self.actor_rollout_wg.generate_sequences(prompts=gen_batch)
+                            gen_batch_list = sum([[
+                                DataProto.concat([
+                                    greedy_gen_batch_output[i:i + 1],
+                                    sampling_gen_batch_output[i * (n_samples - 1):(i + 1) * (n_samples - 1)]
+                                ])
+                            ] for i in range(0, len(greedy_gen_batch_output))], [])
+                            gen_batch_output = DataProto.concat(gen_batch_list)
 
                             # do not change the original meta_info
                             gen_batch.meta_info = {
@@ -635,7 +653,8 @@ class RayPRIMETrainer(object):
                     else:
                         valid_batch = DataProto.concat([valid_batch, roll_batch])
                     print(
-                        f"collected {len(valid_batch)} / {batch_size * n_samples} rollouts and each prompt has {n_samples} responses")
+                        f"collected {len(valid_batch)} / {batch_size * n_samples} rollouts and each prompt has {n_samples} responses"
+                    )
 
                 if len(valid_batch) < batch_size * n_samples:
                     break
@@ -661,7 +680,7 @@ class RayPRIMETrainer(object):
                 with Timer(name='reward', text="{name}: {seconds:.1f} seconds") as timer:
                     if self.use_rm:
                         batch.meta_info['n_samples'] = n_samples
-                        reward_model_tensor= self.rm_wg.compute_rm_score(batch)
+                        reward_model_tensor = self.rm_wg.compute_rm_score(batch)
                         if 'metrics' in reward_model_tensor.meta_info:
                             reward_model_metrics = reduce_metrics(reward_model_tensor.meta_info.pop('metrics'))
                             metrics.update(reward_model_metrics)
@@ -682,8 +701,8 @@ class RayPRIMETrainer(object):
                     for k, v in reward_metrics.items():
                         metrics['train_reward/' + k] = v
                     # decomposed rewards:
-                    for k,v in reward_tensor_dict.items():
-                        batch.batch[k]=v
+                    for k, v in reward_tensor_dict.items():
+                        batch.batch[k] = v
 
                     # compute rewards. apply_kl_penalty if available
                     batch, kl_metrics = apply_kl_penalty(batch,
@@ -696,7 +715,7 @@ class RayPRIMETrainer(object):
                                               self.config.algorithm.gamma,
                                               self.config.algorithm.lam,
                                               adv_estimator=self.config.algorithm.adv_estimator,
-                                              config = self.config)
+                                              config=self.config)
                 metrics['timing/adv'] = timer.last
 
                 # update critic
@@ -734,17 +753,22 @@ class RayPRIMETrainer(object):
                 if self.config.trainer.save_freq > 0 and (self.global_steps + 1) % self.config.trainer.save_freq == 0:
                     actor_local_path = os.path.join(self.config.trainer.default_local_dir, 'actor',
                                                     f'global_step_{self.global_steps}')
-                    actor_remote_path = None #if self.config.trainer.default_hdfs_dir is None else os.path.join(
-                        # self.config.trainer.default_hdfs_dir, 'actor')
+                    actor_remote_path = None  #if self.config.trainer.default_hdfs_dir is None else os.path.join(
+                    # self.config.trainer.default_hdfs_dir, 'actor')
                     self.actor_rollout_wg.save_checkpoint(actor_local_path, actor_remote_path)
 
                     if self.use_critic:
                         critic_local_path = os.path.join(self.config.trainer.default_local_dir, 'critic',
                                                          f'global_step_{self.global_steps}')
-                        critic_remote_path = None #if self.config.trainer.default_hdfs_dir is None else os.path.join(
-                            # self.config.trainer.default_hdfs_dir, 'critic')
+                        critic_remote_path = None  #if self.config.trainer.default_hdfs_dir is None else os.path.join(
+                        # self.config.trainer.default_hdfs_dir, 'critic')
                         self.critic_wg.save_checkpoint(critic_local_path, critic_remote_path)
 
+                    if self.config.reward_model.prime_model.update != 'none':
+                        rm_local_path = os.path.join(self.config.trainer.default_local_dir, 'reward',
+                                                     f'global_step_{self.global_steps}')
+                        rm_remote_path = None
+                        self.rm_wg.save_checkpoint(rm_local_path, rm_remote_path)
                 self.global_steps += 1
 
         # perform validation after training
@@ -760,8 +784,8 @@ class RayPRIMETrainer(object):
         counts = Counter(acc_tensor.tolist())
         print(" ".join(f"{k}:{v}" for k, v in sorted(counts.items())))
         # print(acc_tensor)
-        acc_mask = (acc_tensor >= self.config.data.accuracy_lower_bound) & (
-                    acc_tensor <= self.config.data.accuracy_upper_bound)
+        acc_mask = (acc_tensor >= self.config.data.accuracy_lower_bound) & (acc_tensor
+                                                                            <= self.config.data.accuracy_upper_bound)
         acc_mask = acc_mask.repeat_interleave(n_samples)
         batch = batch.slice(acc_mask)
         return batch

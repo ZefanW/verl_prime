@@ -25,7 +25,8 @@ import torch.distributed
 import verl.utils.hdfs_io as hdfs_io
 import verl.utils.torch_functional as verl_F
 from omegaconf import DictConfig, open_dict
-from transformers import AutoModelForCausalLM
+from transformers import AutoModelForCausalLM, AutoModelForTokenClassification
+from liger_kernel.transformers import AutoLigerKernelForCausalLM
 
 from verl import DataProto
 from verl.single_controller.base import Worker
@@ -123,9 +124,11 @@ class ActorRolloutRefWorker(Worker):
                                trust_remote_code=False):
         from verl.utils.model import print_model_size, update_model_config
         from verl.utils.torch_dtypes import PrecisionType
-        from transformers import AutoModelForCausalLM, AutoConfig
+        from transformers import AutoConfig
         from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, ShardingStrategy, MixedPrecision
         from torch import optim
+        from transformers import AutoModelForCausalLM, AutoModelForTokenClassification
+        from liger_kernel.transformers import AutoLigerKernelForCausalLM
 
         log_gpu_memory_usage('Before init from HF AutoModel', logger=logger)
         local_path = copy_local_path_from_hdfs(model_path)
@@ -166,11 +169,11 @@ class ActorRolloutRefWorker(Worker):
 
         with init_context(), warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            actor_module = AutoModelForCausalLM.from_pretrained(pretrained_model_name_or_path=local_path,
-                                                                torch_dtype=torch_dtype,
-                                                                config=actor_model_config,
-                                                                attn_implementation='flash_attention_2',
-                                                                trust_remote_code=trust_remote_code)
+            actor_module = AutoLigerKernelForCausalLM.from_pretrained(pretrained_model_name_or_path=local_path,
+                                                                      torch_dtype=torch_dtype,
+                                                                      config=actor_model_config,
+                                                                      attn_implementation='flash_attention_2',
+                                                                      trust_remote_code=trust_remote_code)
             # some parameters may not in torch_dtype. TODO(zhangchi.usc1992) remove this after we switch to fsdp2
             actor_module.to(torch_dtype)
 
@@ -577,7 +580,9 @@ class CriticWorker(Worker):
         torch_dtype = self.config.model.fsdp_config.get('model_dtype', 'fp32')
         torch_dtype = PrecisionType.to_dtype(torch_dtype)
 
-        from transformers import AutoConfig, AutoModelForTokenClassification
+        from transformers import AutoConfig
+        from transformers import AutoModelForCausalLM, AutoModelForTokenClassification
+        from liger_kernel.transformers import AutoLigerKernelForCausalLM
         from torch import nn
 
         trust_remote_code = False
@@ -804,9 +809,10 @@ class RewardModelWorker(Worker):
 
     def _build_model(self, config):
         # the following line is necessary
-        from transformers import AutoModelForTokenClassification, AutoConfig
+        from transformers import AutoConfig
         from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, ShardingStrategy, CPUOffload
-
+        from transformers import AutoModelForCausalLM, AutoModelForTokenClassification
+        from liger_kernel.transformers import AutoLigerKernelForCausalLM
         # download the checkpoint from hdfs
         local_path = copy_local_path_from_hdfs(config.model.path)
 
@@ -1034,11 +1040,13 @@ class RewardModelWorker(Worker):
         torch.cuda.empty_cache()
         return output
 
+
 class PRIMERewardModelWorker(Worker):
     """
     PRIME reward model.
     Can update itself whenever compute_rm_score is called.
     """
+
     def __init__(self, config):
         super().__init__()
         import torch.distributed
@@ -1053,7 +1061,8 @@ class PRIMERewardModelWorker(Worker):
         self.ulysses_sequence_parallel_size = self.config.get('ulysses_sequence_parallel_size', 1)
         dp = world_size // self.ulysses_sequence_parallel_size
         if self.ulysses_sequence_parallel_size > 1:
-            self.ulysses_device_mesh = init_device_mesh('cuda',mesh_shape=(dp, self.ulysses_sequence_parallel_size),
+            self.ulysses_device_mesh = init_device_mesh('cuda',
+                                                        mesh_shape=(dp, self.ulysses_sequence_parallel_size),
                                                         mesh_dim_names=['dp', 'sp'])
 
         self.config.micro_batch_size //= torch.distributed.get_world_size()
@@ -1070,6 +1079,8 @@ class PRIMERewardModelWorker(Worker):
         # the following line is necessary
         from transformers import AutoModelForSequenceClassification, AutoTokenizer, AutoConfig
         from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, ShardingStrategy, CPUOffload
+        from transformers import AutoModelForCausalLM, AutoModelForTokenClassification
+        from liger_kernel.transformers import AutoLigerKernelForCausalLM
 
         # download the checkpoint from hdfs
         local_path = copy_local_path_from_hdfs(config.prime_model.path)
@@ -1081,12 +1092,13 @@ class PRIMERewardModelWorker(Worker):
             input_tokenizer_local_path = copy_local_path_from_hdfs(config.prime_model.input_tokenizer)
             self.input_tokenizer = hf_tokenizer(input_tokenizer_local_path,
                                                 trust_remote_code=config.prime_model.get('trust_remote_code', False))
-            self.tokenizer = hf_tokenizer(local_path, trust_remote_code=config.prime_model.get('trust_remote_code', False))
+            self.tokenizer = hf_tokenizer(local_path,
+                                          trust_remote_code=config.prime_model.get('trust_remote_code', False))
 
         trust_remote_code = config.prime_model.get('trust_remote_code', False)
         model_config = AutoConfig.from_pretrained(local_path, trust_remote_code=trust_remote_code)
 
-        use_remove_padding=config.prime_model.get('use_remove_padding', False)
+        use_remove_padding = config.prime_model.get('use_remove_padding', False)
         if use_remove_padding:
             from verl.models.registry import check_model_support_rmpad
             check_model_support_rmpad(model_config.model_type)
@@ -1100,18 +1112,19 @@ class PRIMERewardModelWorker(Worker):
 
         with init_context(), warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            reward_module = AutoModelForCausalLM.from_pretrained(pretrained_model_name_or_path=local_path,
-                                                                               torch_dtype=torch.float32,
-                                                                               attn_implementation='flash_attention_2',
-                                                                               trust_remote_code=trust_remote_code)
+            reward_module = AutoLigerKernelForCausalLM.from_pretrained(pretrained_model_name_or_path=local_path,
+                                                                       torch_dtype=torch.float32,
+                                                                       attn_implementation='flash_attention_2',
+                                                                       trust_remote_code=trust_remote_code)
             reward_module.to(torch.float32)
             if enable_gradient_checkpointing:
                 reward_module.gradient_checkpointing_enable()
         from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, ShardingStrategy, MixedPrecision
-        mixed_precision = MixedPrecision(param_dtype=torch.bfloat16, reduce_dtype=torch.float32,
+        mixed_precision = MixedPrecision(param_dtype=torch.bfloat16,
+                                         reduce_dtype=torch.float32,
                                          buffer_dtype=torch.float32)
         if config.prime_model.get("ref_type", 'freeze') == 'freeze':
-            reference_module = AutoModelForCausalLM.from_pretrained(
+            reference_module = AutoLigerKernelForCausalLM.from_pretrained(
                 pretrained_model_name_or_path=copy_local_path_from_hdfs(config.prime_model.ref_path),
                 torch_dtype=torch.bfloat16,
                 attn_implementation='flash_attention_2',
@@ -1179,7 +1192,9 @@ class PRIMERewardModelWorker(Worker):
     def init_model(self):
         # This is used to import external_lib into the huggingface systems
         import_external_libs(self.config.prime_model.get('external_lib', None))
-        self.reward_module, self.reference_module = self._build_model_optimizer(config=self.config, enable_gradient_checkpointing=self.config.prime_model.get('enable_gradient_checkpointing', False))
+        self.reward_module, self.reference_module = self._build_model_optimizer(
+            config=self.config,
+            enable_gradient_checkpointing=self.config.prime_model.get('enable_gradient_checkpointing', False))
         torch.cuda.empty_cache()
 
     def _switch_chat_template(self, data: DataProto):
@@ -1264,25 +1279,30 @@ class PRIMERewardModelWorker(Worker):
 
             # pad and slice the inputs if sp > 1
             if self.ulysses_sequence_parallel_size > 1:
-                input_ids_rmpad, position_ids_rmpad, pad_size = ulysses_pad_and_slice_inputs(input_ids_rmpad,
-                                                                                             position_ids_rmpad,
-                                                                                             sp_size=self.ulysses_sequence_parallel_size)
-                input_ids_rmpad_rolled, _, _ = ulysses_pad_and_slice_inputs(input_ids_rmpad_rolled, None,self.ulysses_sequence_parallel_size)
+                input_ids_rmpad, position_ids_rmpad, pad_size = ulysses_pad_and_slice_inputs(
+                    input_ids_rmpad, position_ids_rmpad, sp_size=self.ulysses_sequence_parallel_size)
+                input_ids_rmpad_rolled, _, _ = ulysses_pad_and_slice_inputs(input_ids_rmpad_rolled, None,
+                                                                            self.ulysses_sequence_parallel_size)
             input_ids_rmpad_rolled = input_ids_rmpad_rolled.squeeze(0)
             rm_output_logits = self.reward_module(input_ids=input_ids_rmpad,
-                                   attention_mask=None,
-                                   position_ids=position_ids_rmpad,use_cache=False).logits.squeeze(0) # copied. I don't really know why there is a squeeze
+                                                  attention_mask=None,
+                                                  position_ids=position_ids_rmpad,
+                                                  use_cache=False).logits.squeeze(
+                                                      0)  # copied. I don't really know why there is a squeeze
             rm_log_labels = verl_F.logprobs_from_logits(logits=rm_output_logits, labels=input_ids_rmpad_rolled)
             if self.ulysses_sequence_parallel_size > 1:
                 rm_log_labels = gather_outpus_and_unpad(rm_log_labels, gather_dim=0, unpad_dim=0, padding_size=pad_size)
-            rm_log_labels=pad_input(hidden_states=rm_log_labels.unsqueeze(-1),indices=indices,batch=batch_size,seqlen=seqlen).squeeze(-1)
+            rm_log_labels = pad_input(hidden_states=rm_log_labels.unsqueeze(-1),
+                                      indices=indices,
+                                      batch=batch_size,
+                                      seqlen=seqlen).squeeze(-1)
 
         else:
             rm_output_logits = self.reward_module(input_ids=micro_batch['input_ids'],
-                                           attention_mask=micro_batch['attention_mask'],
-                                           position_ids=micro_batch['position_ids']).logits
+                                                  attention_mask=micro_batch['attention_mask'],
+                                                  position_ids=micro_batch['position_ids']).logits
             rm_log_prob = torch.nn.functional.log_softmax(rm_output_logits[:, :-1, :],
-                                                      dim=-1)  # (batch_size, seq_length, vocab_size)
+                                                          dim=-1)  # (batch_size, seq_length, vocab_size)
             rm_log_labels = rm_log_prob.gather(dim=-1, index=micro_batch['input_ids'][:, 1:].unsqueeze(-1)).squeeze(
                 -1)  # (batch, seq_length)
 
@@ -1290,18 +1310,29 @@ class PRIMERewardModelWorker(Worker):
             # 不用重复remove pad，只用做好re-pad即可
             with torch.no_grad(), torch.autocast(device_type='cuda', dtype=torch.bfloat16):
                 if self.ulysses_sequence_parallel_size > 1 and self.use_remove_padding:
-                    ref_output_logits = self.reference_module(input_ids=input_ids_rmpad,attention_mask=None,position_ids=position_ids_rmpad, use_cache=False).logits.squeeze(0)
-                    ref_log_labels = verl_F.logprobs_from_logits(logits=ref_output_logits, labels=input_ids_rmpad_rolled)
-                    ref_log_labels=gather_outpus_and_unpad(ref_log_labels, gather_dim=0, unpad_dim=0, padding_size=pad_size)
-                    ref_log_labels=pad_input(hidden_states=ref_log_labels.unsqueeze(-1), indices=indices, batch=batch_size,seqlen=seqlen).squeeze(-1)
+                    ref_output_logits = self.reference_module(input_ids=input_ids_rmpad,
+                                                              attention_mask=None,
+                                                              position_ids=position_ids_rmpad,
+                                                              use_cache=False).logits.squeeze(0)
+                    ref_log_labels = verl_F.logprobs_from_logits(logits=ref_output_logits,
+                                                                 labels=input_ids_rmpad_rolled)
+                    ref_log_labels = gather_outpus_and_unpad(ref_log_labels,
+                                                             gather_dim=0,
+                                                             unpad_dim=0,
+                                                             padding_size=pad_size)
+                    ref_log_labels = pad_input(hidden_states=ref_log_labels.unsqueeze(-1),
+                                               indices=indices,
+                                               batch=batch_size,
+                                               seqlen=seqlen).squeeze(-1)
                 else:
                     ref_output_logits = self.reference_module(input_ids=micro_batch['input_ids'],
-                                                    attention_mask=micro_batch['attention_mask'],
-                                                    position_ids=micro_batch['position_ids']).logits
+                                                              attention_mask=micro_batch['attention_mask'],
+                                                              position_ids=micro_batch['position_ids']).logits
                     ref_log_prob = torch.nn.functional.log_softmax(ref_output_logits[:, :-1, :],
-                                                            dim=-1)  # (batch_size, seq_length, vocab_size)
-                    ref_log_labels = ref_log_prob.gather(dim=-1, index=micro_batch['input_ids'][:, 1:].unsqueeze(-1)).squeeze(
-                        -1)  # (batch, seq_length)
+                                                                   dim=-1)  # (batch_size, seq_length, vocab_size)
+                    ref_log_labels = ref_log_prob.gather(dim=-1,
+                                                         index=micro_batch['input_ids'][:, 1:].unsqueeze(-1)).squeeze(
+                                                             -1)  # (batch, seq_length)
         else:
             ref_log_labels = micro_batch['old_log_probs']
 
@@ -1329,8 +1360,10 @@ class PRIMERewardModelWorker(Worker):
 
             for i, step_end in enumerate(step_ends):
                 for j in range(len(step_end)):
-                    step_range = [min(step_end[j - 1] + 1, num_actions - 1) if j > 0 else 0,
-                                  min(num_actions - 1, step_end[j])]
+                    step_range = [
+                        min(step_end[j - 1] + 1, num_actions - 1) if j > 0 else 0,
+                        min(num_actions - 1, step_end[j])
+                    ]
                     token_level_score[i, step_range[1]] = q[i, step_range[0]:step_range[1] + 1].sum()
 
         return token_level_score, q
@@ -1339,27 +1372,31 @@ class PRIMERewardModelWorker(Worker):
     def compute_rm_score(self, data: DataProto):
         data = data.to('cuda')
 
-        n_samples=data.meta_info['n_samples']
-        beta=self.config.prime_model.get('beta_train', 0.05)
+        n_samples = data.meta_info['n_samples']
+        beta = self.config.prime_model.get('beta_train', 0.05)
         if self._do_switch_chat_template:
             rm_data = self._switch_chat_template(data)
         else:
-            rm_data=data
+            rm_data = data
 
-        if self.update_dpo_type!='none':
+        if self.update_dpo_type != 'none':
             if self._is_offload_optimizer:
                 load_fsdp_optimizer(optimizer=self.reward_optimizer, device_id=torch.cuda.current_device())
         if self._is_offload_param:
-            load_fsdp_param_and_grad(module=self.reward_module,device_id=torch.cuda.current_device(),load_grad=self._is_offload_grad)
+            load_fsdp_param_and_grad(module=self.reward_module,
+                                     device_id=torch.cuda.current_device(),
+                                     load_grad=self._is_offload_grad)
             if self.reference_module is not None:
-                load_fsdp_param_and_grad(module=self.reference_module,device_id=torch.cuda.current_device(),load_grad=self._is_offload_grad)
+                load_fsdp_param_and_grad(module=self.reference_module,
+                                         device_id=torch.cuda.current_device(),
+                                         load_grad=self._is_offload_grad)
 
         rm_data.batch = rm_data.batch.cuda()
 
         # 由于ulysses的存在，需要重新切分数据
         with self.ulysses_sharding_manager:
             rm_data = self.ulysses_sharding_manager.preprocess_data(data=rm_data)
-            data=self.ulysses_sharding_manager.preprocess_data(data=data)
+            data = self.ulysses_sharding_manager.preprocess_data(data=data)
 
             micro_batches = rm_data.batch.split(self.config.micro_batch_size)
             mini_batch_size = self.config.mini_batch_size // torch.distributed.get_world_size()
@@ -1372,7 +1409,8 @@ class PRIMERewardModelWorker(Worker):
             prompt_length = prompt_ids.shape[-1]
             step = 0
 
-            for batch_id, micro_batch in enumerate(micro_batches):  # micro batch is tensordict here, rather than data proto
+            for batch_id, micro_batch in enumerate(
+                    micro_batches):  # micro batch is tensordict here, rather than data proto
                 step += micro_batch.batch_size[0]
                 if self.update_dpo_type == 'none':
                     with torch.no_grad(), torch.autocast(device_type='cuda', dtype=torch.bfloat16):
@@ -1381,7 +1419,7 @@ class PRIMERewardModelWorker(Worker):
                         token_level_scores.append(token_level_score)
                 elif self.update_dpo_type in ['after', 'before']:
                     # with torch.autocast(device_type='cuda',dtype=torch.bfloat16):
-                    token_level_score, q= self._forward_micro_batch(micro_batch, prompt_length)
+                    token_level_score, q = self._forward_micro_batch(micro_batch, prompt_length)
                     token_level_scores.append(token_level_score)
                     original_token_level_score = q
                     acc = micro_batch['acc']
@@ -1390,7 +1428,9 @@ class PRIMERewardModelWorker(Worker):
 
                     # different losses:
                     if self.config.prime_model.loss_type == 'ce':
-                        dpo_loss = core_algos.compute_ce_dpo_loss_rm(original_token_level_score, acc, eos_mask=eos_mask,
+                        dpo_loss = core_algos.compute_ce_dpo_loss_rm(original_token_level_score,
+                                                                     acc,
+                                                                     eos_mask=eos_mask,
                                                                      beta=beta)
                     else:
                         raise NotImplementedError
@@ -1415,7 +1455,9 @@ class PRIMERewardModelWorker(Worker):
             acc = rm_data.batch['acc']
             attention_mask = rm_data.batch['attention_mask']
             eos_mask = attention_mask[:, prompt_length:]
-            dpo_acc_before = core_algos.compute_dpo_accuracy(token_level_scores, acc, eos_mask=eos_mask,
+            dpo_acc_before = core_algos.compute_dpo_accuracy(token_level_scores,
+                                                             acc,
+                                                             eos_mask=eos_mask,
                                                              n_samples=n_samples)
             data = {
                 'reward_model/dpo_acc_before': dpo_acc_before.detach().item(),
@@ -1438,7 +1480,9 @@ class PRIMERewardModelWorker(Worker):
                 attention_mask = rm_data.batch['attention_mask']
                 eos_mask = attention_mask[:, prompt_length:]
 
-                dpo_acc_after = core_algos.compute_dpo_accuracy(token_level_scores, acc, eos_mask=eos_mask,
+                dpo_acc_after = core_algos.compute_dpo_accuracy(token_level_scores,
+                                                                acc,
+                                                                eos_mask=eos_mask,
                                                                 n_samples=n_samples)
                 data = {
                     'reward_model/dpo_acc_after': dpo_acc_after.detach().item(),
@@ -1478,6 +1522,35 @@ class PRIMERewardModelWorker(Worker):
         if isinstance(self.reward_module, FSDP):
             grad_norm = self.reward_module.clip_grad_norm_(self.config.prime_model.optim.grad_clip)
         else:
-            grad_norm = torch.nn.utils.clip_grad_norm_(self.reward_module.parameters(), max_norm=self.config.prime_model.optim.grad_clip)
+            grad_norm = torch.nn.utils.clip_grad_norm_(self.reward_module.parameters(),
+                                                       max_norm=self.config.prime_model.optim.grad_clip)
         self.reward_optimizer.step()
         return grad_norm
+
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def save_checkpoint(self, local_path, hdfs_path=None):
+        import torch
+        if self._is_offload_param:
+            load_fsdp_param_and_grad(module=self.reward_module,
+                                     device_id=torch.cuda.current_device(),
+                                     load_grad=self._is_offload_grad)
+
+        # TODO: support DCP and save sharded checkpoints
+        import torch.distributed
+        from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, StateDictType, FullStateDictConfig
+        cfg = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
+        with FSDP.state_dict_type(self.reward_module, StateDictType.FULL_STATE_DICT, cfg):
+            state_dict = self.reward_module.state_dict()
+        if self.rank == 0:
+            print(f'Saving reward checkpoint to {local_path}')
+            os.makedirs(local_path, exist_ok=True)
+            self.reward_module._fsdp_wrapped_module.save_pretrained(local_path, state_dict=state_dict)
+            self.tokenizer.save_pretrained(local_path)
+            if hdfs_path is not None:
+                print(f'Uploading reward checkpoint to {hdfs_path}')
+                hdfs_io.makedirs(hdfs_path, exist_ok=True)
+                hdfs_io.copy(src=local_path, dst=hdfs_path)
+
+        torch.distributed.barrier()
+        if self._is_offload_param:
+            offload_fsdp_param_and_grad(module=self.reward_module, offload_grad=self._is_offload_grad)
