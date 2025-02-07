@@ -1359,8 +1359,8 @@ class PRIMERewardModelWorker(Worker):
                 lastgaelam = 0
                 # change the last token and mask out all paddings to make this process easier
                 for i in range(q.shape[0]):
-                    q_[i,max_positions[1]-1] = acc[i]-q_[i,:max_positions[1]-1].sum()
-                    q_[i,max_positions[1]:] =0
+                    q_[i,max_positions[i]-1] = acc[i]-q_[i,:max_positions[i]-1].sum()
+                    q_[i,max_positions[i]:] =0
 
                 for t in reversed(num_actions):
                     delta = q_[:, t]
