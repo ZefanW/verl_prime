@@ -1,6 +1,5 @@
 set -x
 # 用于测试main exp用到的所有功能
-
 export OUTLINES_CACHE_DIR=~/.cache/outlines/$(uuidgen)
 export NCCL_DEBUG=WARN
 export WANDB_API_KEY='194ba8b74c01d7f88fbf18db8f53206e24b2d46a'

@@ -1344,6 +1344,29 @@ class PRIMERewardModelWorker(Worker):
 
         # reward computation does not need gradient. only q needs
         with torch.no_grad():
+
+            # generalized estimation of r should go before the reward filling. r means process reward for policy model, or the advantage of reward model.
+            lam = self.config.prime_lambda
+            beta = self.config.prime_model.get('beta_train', 0.05)  # highlight: the beta scaling is moved here!!
+            if lam == 0.:
+                r = q * beta
+            else:
+                # reward coefficient takes no effect here
+                acc = micro_batch['acc']
+                q_ = q * beta
+                r = torch.zeros_like(q)
+                # TODO: 参考implicit value model在此处的处理方式，应该是靠直接修改max_positions[0]-1位置的q为r-Q_{t-1}，后面的r全部抹0
+                lastgaelam = 0
+                # change the last token and mask out all paddings to make this process easier
+                for i in range(q.shape[0]):
+                    q_[i,max_positions[1]-1] = acc[i]-q_[i,:max_positions[1]-1].sum()
+                    q_[i,max_positions[1]:] =0
+
+                for t in reversed(num_actions):
+                    delta = q_[:, t]
+                    lastgaelam = delta + lam * lastgaelam
+                    r[:,t] = lastgaelam
+
             step_ends = []
 
             if self.config.prime_granularity == 'token':
@@ -1364,7 +1387,7 @@ class PRIMERewardModelWorker(Worker):
                         min(step_end[j - 1] + 1, num_actions - 1) if j > 0 else 0,
                         min(num_actions - 1, step_end[j])
                     ]
-                    token_level_score[i, step_range[1]] = q[i, step_range[0]:step_range[1] + 1].sum()
+                    token_level_score[i, step_range[1]] = r[i, step_range[0]:step_range[1] + 1].sum()
 
         return token_level_score, q
 
@@ -1496,9 +1519,9 @@ class PRIMERewardModelWorker(Worker):
             if self.config.prime_norm == 'batch_norm':  # this method will still consider the relative value of rewards. The key is to control the absolute value of RETURN from being too high. so the normalization is done by controlling the maximum of reverse cumulative sum
                 reverse_cumsum = torch.cumsum(token_level_scores.flip(dims=[1]), dim=-1).flip(dims=[1])
                 token_level_scores = token_level_scores / (reverse_cumsum.abs().max() + 1e-6)
-            else:
-                # no normalization, the reward will be normalized by beta_train
-                token_level_scores = token_level_scores * beta
+            # else:
+            #     # no normalization, the reward will be normalized by beta_train
+            #     token_level_scores = token_level_scores * beta
 
             output = DataProto.from_dict(tensors={'rm_scores': token_level_scores}, meta_info={'metrics': metrics})
             output = self.ulysses_sharding_manager.postprocess_data(data=output)

@@ -764,7 +764,7 @@ class RayPRIMETrainer(object):
                         # self.config.trainer.default_hdfs_dir, 'critic')
                         self.critic_wg.save_checkpoint(critic_local_path, critic_remote_path)
 
-                    if self.config.reward_model.prime_model.update != 'none':
+                    if self.use_rm and self.config.reward_model.prime_model.update != 'none':
                         rm_local_path = os.path.join(self.config.trainer.default_local_dir, 'reward',
                                                      f'global_step_{self.global_steps}')
                         rm_remote_path = None
