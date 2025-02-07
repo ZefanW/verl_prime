@@ -1362,7 +1362,7 @@ class PRIMERewardModelWorker(Worker):
                     q_[i,max_positions[i]-1] = acc[i]-q_[i,:max_positions[i]-1].sum()
                     q_[i,max_positions[i]:] =0
 
-                for t in reversed(num_actions):
+                for t in reversed(range(num_actions)):
                     delta = q_[:, t]
                     lastgaelam = delta + lam * lastgaelam
                     r[:,t] = lastgaelam
