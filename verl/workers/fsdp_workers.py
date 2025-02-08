@@ -1089,11 +1089,11 @@ class PRIMERewardModelWorker(Worker):
             self._do_switch_chat_template = False
         else:
             self._do_switch_chat_template = True
-            input_tokenizer_local_path = copy_local_path_from_hdfs(config.prime_model.input_tokenizer)
-            self.input_tokenizer = hf_tokenizer(input_tokenizer_local_path,
-                                                trust_remote_code=config.prime_model.get('trust_remote_code', False))
-            self.tokenizer = hf_tokenizer(local_path,
-                                          trust_remote_code=config.prime_model.get('trust_remote_code', False))
+        input_tokenizer_local_path = copy_local_path_from_hdfs(config.prime_model.input_tokenizer)
+        self.input_tokenizer = hf_tokenizer(input_tokenizer_local_path,
+                                            trust_remote_code=config.prime_model.get('trust_remote_code', False))
+        self.tokenizer = hf_tokenizer(local_path,
+                                      trust_remote_code=config.prime_model.get('trust_remote_code', False))
 
         trust_remote_code = config.prime_model.get('trust_remote_code', False)
         model_config = AutoConfig.from_pretrained(local_path, trust_remote_code=trust_remote_code)
