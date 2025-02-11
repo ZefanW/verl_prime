@@ -67,6 +67,8 @@ async def parallel_evaluate_continual_async(completions, references, tasks, num_
                     proc.kill()
                 except Exception as kill_err:
                     print('shut down failed: '+str(kill_err))
+                finally:
+                    raise
 
     # Process results
     for result, completion, reference, task in zip(results, completions, references, tasks):

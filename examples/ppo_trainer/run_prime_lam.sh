@@ -18,7 +18,7 @@ COMBINE_PATH=$BASE_DIR/datasets/combine1203
 CODE_PATH=$BASE_DIR/datasets/code_1113_short
 SOLVABLE_NUMINA_PATH=/home/test/test05/cgq/data/numina_solvable
 PROJECT_NAME='o1_pr'
-EXPERIMENT_NAME='gt-prm-online-before-solvable-0.2-0.8-iprmlam0.5'
+EXPERIMENT_NAME='gt-prm-online-before-solvable-0.2-0.8-iprmlam0.1'
 
 python3 -m verl.trainer.main_ppo \
     data.train_files=["$SOLVABLE_NUMINA_PATH/train.parquet","$CODE_PATH/train.parquet"] \
@@ -56,7 +56,7 @@ python3 -m verl.trainer.main_ppo \
     data.accuracy_lower_bound=0.2 \
     data.accuracy_upper_bound=0.8 \
     algorithm.adv_estimator=rloo \
-    algorithm.adv_params.verifier_gamma=0.95 \
+    algorithm.adv_params.verifier_gamma=1.0 \
     algorithm.adv_params.reward_model_gamma=1.0 \
     reward_model.rm_type=prime \
     reward_model.rm_coef=5 \
@@ -70,6 +70,6 @@ python3 -m verl.trainer.main_ppo \
     reward_model.prime_model.optim.lr=1e-6 \
     reward_model.prime_model.optim.grad_clip=10.0 \
     reward_model.prime_model.input_tokenizer=null \
-    reward_model.prime_lambda=0.5 \
+    reward_model.prime_lambda=0.1 \
     trainer.default_local_dir=$BASE_DIR/checkpoints/$PROJECT_NAME/$EXPERIMENT_NAME \
 
