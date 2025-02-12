@@ -33,11 +33,9 @@ def run_ppo(config, compute_score=None):
     ray.get(main_task.remote(config, compute_score))
 
 
-@ray.remote
+@ray.remote(num_cpus=1)  # please make sure main_task is not scheduled on head
 def main_task(config, compute_score=None):
     from verl.utils.fs import copy_local_path_from_hdfs
-    from transformers import AutoTokenizer
-
     # print initial config
     from pprint import pprint
     from omegaconf import OmegaConf
