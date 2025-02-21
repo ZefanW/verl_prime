@@ -8,17 +8,16 @@ export VLLM_ATTENTION_BACKEND=XFORMERS
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export TOKENIZERS_PARALLELISM=true
 export WANDB_MODE=offline
-export WANDB_DIR=/home/test/test05/wzf/verl_prime/
+export WANDB_DIR=/data3/wzf/verl_prime/
 
-BASE_DIR=/home/test/test05/wzf/verl
-HF_DIR=/home/test/test05/wzf/huggingface
-SOLVABLE_NUMINA_PATH=/home/test/test05/cgq/data/numina_solvable
-CODE_PATH=$BASE_DIR/datasets/code_1113_short
-COMBINE_PATH=$BASE_DIR/datasets/combine1203
-CODE_PATH=$BASE_DIR/datasets/code_1113_short
-SOLVABLE_NUMINA_PATH=/home/test/test05/cgq/data/numina_solvable
+BASE_DIR=/data1/verl_prime
+HF_DIR=/data3/wzf/huggingface
+SOLVABLE_NUMINA_PATH=/data3/wzf/datasets/numina_solvable
+CODE_PATH=/data3/wzf/datasets/code_1113_short
 PROJECT_NAME='o1_rm'
-EXPERIMENT_NAME='s28-prime-fastrm-nogt'
+EXPERIMENT_NAME='s28-prime-fastrm-nogt-orm'
+
+PARALLEL_SIZE=2
 
 python3 -m verl.trainer.main_ppo \
     data.train_files=["$SOLVABLE_NUMINA_PATH/train.parquet","$CODE_PATH/train.parquet"] \
@@ -27,10 +26,10 @@ python3 -m verl.trainer.main_ppo \
     data.val_batch_size=1024 \
     data.max_prompt_length=1024 \
     data.max_response_length=3072 \
-    actor_rollout_ref.model.path=/home/test/test04/yuanjiarui/o1-sft/saves/qwen_all_abla_numina_oly_orca/full/qwen_all_abla_numina_oly_orca \
+    actor_rollout_ref.model.path=$HF_DIR/Eurus-2-7B-SFT\
     actor_rollout_ref.actor.optim.lr=5e-7 \
     actor_rollout_ref.actor.ppo_mini_batch_size=256 \
-    actor_rollout_ref.actor.ppo_micro_batch_size=8 \
+    actor_rollout_ref.actor.ppo_micro_batch_size=16 \
     actor_rollout_ref.actor.fsdp_config.param_offload=True \
     actor_rollout_ref.actor.fsdp_config.grad_offload=True \
     actor_rollout_ref.actor.fsdp_config.optimizer_offload=True \
@@ -38,7 +37,7 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.log_prob_micro_batch_size=64 \
     actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
     actor_rollout_ref.rollout.name=vllm \
-    actor_rollout_ref.rollout.gpu_memory_utilization=0.7 \
+    actor_rollout_ref.rollout.gpu_memory_utilization=0.5 \
     actor_rollout_ref.ref.log_prob_micro_batch_size=64 \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
     algorithm.kl_ctrl.kl_coef=0.00 \
@@ -47,7 +46,7 @@ python3 -m verl.trainer.main_ppo \
     trainer.experiment_name=$EXPERIMENT_NAME \
     trainer.default_local_dir=$BASE_DIR/checkpoints/$PROJECT_NAME/$EXPERIMENT_NAME \
     trainer.n_gpus_per_node=8 \
-    trainer.nnodes=1 \
+    trainer.nnodes=2 \
     trainer.save_freq=16 \
     trainer.test_freq=16 \
     trainer.total_epochs=1 \
@@ -60,17 +59,20 @@ python3 -m verl.trainer.main_ppo \
     algorithm.adv_params.reward_model_gamma=1.0 \
     reward_model.rm_type=prime \
     reward_model.rm_coef=5 \
-    verifier.reward_coef=0 \
-    reward_model.prime_model.path=/home/test/test04/yuanjiarui/o1-sft/saves/qwen_all_abla_numina_oly_orca/full/qwen_all_abla_numina_oly_orca \
-    reward_model.prime_model.ref_path=/home/test/test04/yuanjiarui/o1-sft/saves/qwen_all_abla_numina_oly_orca/full/qwen_all_abla_numina_oly_orca \
+    reward_model.prime_model.path=$HF_DIR/Eurus-2-7B-SFT \
+    reward_model.prime_model.ref_path=$HF_DIR/Eurus-2-7B-SFT \
     reward_model.model.input_tokenizer=null \
-    reward_model.prime_granularity=token \
-    reward_model.micro_batch_size=8 \
+    reward_model.prime_granularity=whole \
+    reward_model.micro_batch_size=16 \
     reward_model.prime_model.update=before \
     reward_model.prime_model.beta_train=0.05 \
     reward_model.prime_model.optim.lr=1e-6 \
     reward_model.prime_model.optim.grad_clip=10.0 \
     reward_model.prime_model.input_tokenizer=null \
+    reward_model.prime_lambda=0.5 \
     reward_model.mini_batch_size=64 \
     trainer.default_local_dir=$BASE_DIR/checkpoints/$PROJECT_NAME/$EXPERIMENT_NAME \
-
+    actor_rollout_ref.actor.ulysses_sequence_parallel_size=$PARALLEL_SIZE \
+    actor_rollout_ref.rollout.tensor_model_parallel_size=$PARALLEL_SIZE \
+    actor_rollout_ref.model.use_remove_padding=True \
+    verifier.reward_coef=0 \

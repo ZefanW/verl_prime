@@ -14,7 +14,7 @@
 """
 The main entry point to run the PPO algorithm
 """
-
+import gc
 import os
 import logging
 import os
@@ -582,7 +582,7 @@ class CriticWorker(Worker):
 
         from transformers import AutoConfig
         from transformers import AutoModelForCausalLM, AutoModelForTokenClassification
-        from liger_kernel.transformers import AutoLigerKernelForCausalLM
+        # from liger_kernel.transformers import AutoLigerKernelForCausalLM
         from torch import nn
 
         trust_remote_code = False
@@ -1359,7 +1359,8 @@ class PRIMERewardModelWorker(Worker):
                 lastgaelam = 0
                 # change the last token and mask out all paddings to make this process easier
                 for i in range(q.shape[0]):
-                    q_[i,max_positions[i]-1] = acc[i]-q_[i,:max_positions[i]-1].sum()
+                    if self.config.prime_use_gt:
+                        q_[i,max_positions[i]-1] = acc[i]-q_[i,:max_positions[i]-1].sum()
                     q_[i,max_positions[i]:] =0
 
                 for t in reversed(range(num_actions)):
@@ -1378,7 +1379,8 @@ class PRIMERewardModelWorker(Worker):
             else:
                 raise NotImplementedError
 
-            token_level_score = torch.zeros_like(micro_batch['input_ids'][:, -num_actions:]).to(torch.float32)
+            # token_level_score = torch.zeros_like(micro_batch['input_ids'][:, -num_actions:]).to(torch.float32)
+            token_level_score = torch.zeros_like(q)
             # the strategy of translating q to reward function:
 
             for i, step_end in enumerate(step_ends):
@@ -1419,7 +1421,7 @@ class PRIMERewardModelWorker(Worker):
         # 由于ulysses的存在，需要重新切分数据
         with self.ulysses_sharding_manager:
             rm_data = self.ulysses_sharding_manager.preprocess_data(data=rm_data)
-            data = self.ulysses_sharding_manager.preprocess_data(data=data)
+            # data = self.ulysses_sharding_manager.preprocess_data(data=data)
 
             micro_batches = rm_data.batch.split(self.config.micro_batch_size)
             mini_batch_size = self.config.mini_batch_size // torch.distributed.get_world_size()
@@ -1473,6 +1475,8 @@ class PRIMERewardModelWorker(Worker):
                     data = {'reward_model/grad_norm': grad_norm.detach().item()}
                     append_to_dict(metrics, data)
 
+                gc.collect()
+
             # 所有方法都需要在这里计算一次dpo_acc
             token_level_scores = torch.cat(token_level_scores, 0)
             acc = rm_data.batch['acc']
@@ -1497,6 +1501,7 @@ class PRIMERewardModelWorker(Worker):
                     with torch.no_grad(), torch.autocast(device_type='cuda', dtype=torch.bfloat16):
                         token_level_score, q = self._forward_micro_batch(micro_batch, prompt_length)
                         token_level_scores.append(token_level_score)
+                        gc.collect()
                 token_level_scores = torch.cat(token_level_scores, 0)
 
                 acc = rm_data.batch['acc']
@@ -1522,7 +1527,6 @@ class PRIMERewardModelWorker(Worker):
             # else:
             #     # no normalization, the reward will be normalized by beta_train
             #     token_level_scores = token_level_scores * beta
-
             output = DataProto.from_dict(tensors={'rm_scores': token_level_scores}, meta_info={'metrics': metrics})
             output = self.ulysses_sharding_manager.postprocess_data(data=output)
         if self.update_dpo_type != 'none':

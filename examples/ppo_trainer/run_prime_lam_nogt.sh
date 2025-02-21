@@ -18,7 +18,8 @@ COMBINE_PATH=$BASE_DIR/datasets/combine1203
 CODE_PATH=$BASE_DIR/datasets/code_1113_short
 SOLVABLE_NUMINA_PATH=/home/test/test05/cgq/data/numina_solvable
 PROJECT_NAME='o1_rm'
-EXPERIMENT_NAME='s28-prime-fastrm-nogt'
+EXPERIMENT_NAME='s28-prime-fastrm-nogt-iprm-lam0.1'
+
 
 python3 -m verl.trainer.main_ppo \
     data.train_files=["$SOLVABLE_NUMINA_PATH/train.parquet","$CODE_PATH/train.parquet"] \
@@ -60,7 +61,6 @@ python3 -m verl.trainer.main_ppo \
     algorithm.adv_params.reward_model_gamma=1.0 \
     reward_model.rm_type=prime \
     reward_model.rm_coef=5 \
-    verifier.reward_coef=0 \
     reward_model.prime_model.path=/home/test/test04/yuanjiarui/o1-sft/saves/qwen_all_abla_numina_oly_orca/full/qwen_all_abla_numina_oly_orca \
     reward_model.prime_model.ref_path=/home/test/test04/yuanjiarui/o1-sft/saves/qwen_all_abla_numina_oly_orca/full/qwen_all_abla_numina_oly_orca \
     reward_model.model.input_tokenizer=null \
@@ -71,6 +71,11 @@ python3 -m verl.trainer.main_ppo \
     reward_model.prime_model.optim.lr=1e-6 \
     reward_model.prime_model.optim.grad_clip=10.0 \
     reward_model.prime_model.input_tokenizer=null \
+    reward_model.prime_lambda=0.1 \
+    reward_model.prime_use_gt=False \
     reward_model.mini_batch_size=64 \
+    verifier.reward_coef=0 \
     trainer.default_local_dir=$BASE_DIR/checkpoints/$PROJECT_NAME/$EXPERIMENT_NAME \
+    actor_rollout_ref.model.use_remove_padding=True \
+    trainer.val_before_train=False \
 

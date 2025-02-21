@@ -126,7 +126,10 @@ def main(config):
                 runtime_env = json.load(f)
             ray.init(runtime_env=runtime_env)
         else:
-            ray.init(runtime_env={'env_vars': {'TOKENIZERS_PARALLELISM': 'true', 'NCCL_DEBUG': 'WARN'}})
+            runtime_env = {'env_vars':{'TOKENIZERS_PARALLELISM': 'true', 'NCCL_DEBUG': 'WARN'}}
+            # if os.environ.get('WORKING_DIR', None) is not None:
+            #     runtime_env['working_dir'] = os.environ.get('WORKING_DIR',None)
+            ray.init(runtime_env=runtime_env)
 
     ray.get(main_task.remote(config))
 

@@ -16,8 +16,8 @@ CODE_PATH=$BASE_DIR/datasets/code_1113_short
 COMBINE_PATH=$BASE_DIR/datasets/combine1203
 CODE_PATH=$BASE_DIR/datasets/code_1113_short
 SOLVABLE_NUMINA_PATH=/home/test/test05/cgq/data/numina_solvable
-PROJECT_NAME='o1_pr'
-EXPERIMENT_NAME='gt-prm-online-before-solvable-0.2-0.8-ppo-lam097'
+PROJECT_NAME='o1_rm'
+EXPERIMENT_NAME='s28-ppo-fastrm-lam95'
 
 python3 -m verl.trainer.main_ppo \
     data.train_files=["$SOLVABLE_NUMINA_PATH/train.parquet","$CODE_PATH/train.parquet"] \
@@ -43,6 +43,7 @@ python3 -m verl.trainer.main_ppo \
     algorithm.kl_ctrl.kl_coef=0.00 \
     critic.model.path=/home/test/test04/yuanjiarui/o1-sft/saves/qwen_all_abla_numina_oly_orca/full/qwen_all_abla_numina_oly_orca \
     critic.ppo_micro_batch_size=8 \
+    critic.ppo_mini_batch_size=64 \
     critic.optim.lr=1e-6 \
     trainer.logger=['console','wandb'] \
     trainer.project_name=$PROJECT_NAME \
@@ -59,7 +60,7 @@ python3 -m verl.trainer.main_ppo \
     data.accuracy_upper_bound=0.8 \
     algorithm.adv_estimator=gae \
     algorithm.adv_params.verifier_gamma=1.0 \
-    algorithm.lam=0.97 \
+    algorithm.lam=0.95 \
     reward_model.rm_coef=0 \
     trainer.default_local_dir=$BASE_DIR/checkpoints/$PROJECT_NAME/$EXPERIMENT_NAME \
 

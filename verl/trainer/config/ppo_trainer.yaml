@@ -151,6 +151,7 @@ reward_model:
   prime_granularity: token # whole
   prime_norm: batch_norm # batch_norm or none. if set to none, the normalizer is beta_train
   prime_lambda: 0.0 # lambda value used to estimate process reward. original iPRM tantamount 0.0 lambda.
+  prime_use_gt: False
   prime_model:
     input_tokenizer: ${actor_rollout_ref.model.path}
     path: /home/wangzefan/huggingface/dpo-prm

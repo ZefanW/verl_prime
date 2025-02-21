@@ -668,8 +668,7 @@ class RayPRIMETrainer(object):
                 print(f'rollout batch size: {len(batch)}')
 
                 # careful about this! balancing batch may not be neccasery
-                self._balance_batch(batch, metrics=metrics)
-
+                # self._balance_batch(batch, metrics=metrics) # highlight: this makes rloo not working!!! but ppo will still
                 if self.use_reference_policy:
                     # compute reference log_prob
                     with Timer(name='ref', text="{name}: {seconds:.1f} seconds") as timer:

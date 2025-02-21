@@ -151,6 +151,7 @@ def compute_gae_value_returns(data: verl.DataProto, eos_mask: torch.Tensor, n_sa
     # use implicit prm as value model. this algorithm can be converted to a special gae estimator
     # reward coefficient take no effect here.
     # gamma is always 1.0
+    # update: r_ov can be removed to prevent last-token bias.
     with torch.no_grad():
         token_level_rewards = data.batch['gt_scores']
         q = data.batch['rm_scores'].clone()  # beta * logprob
@@ -162,7 +163,8 @@ def compute_gae_value_returns(data: verl.DataProto, eos_mask: torch.Tensor, n_sa
         valid_response_length = data.batch['attention_mask'][:, prompt_length:].sum(-1)
         # make q equal value: for t at eos, q equals reward-sum(q). for later t, q is zero
         for i in range(q.shape[0]):
-            q[i, valid_response_length[i] -
+            if config.reward_model.prime_use_gt:
+                q[i, valid_response_length[i] -
               1] = token_level_rewards[i, valid_response_length[i] - 1] - q[i, :valid_response_length[i] - 1].sum()
             q[i, valid_response_length[i]:] = 0
 
@@ -427,6 +429,7 @@ def compute_policy_loss(old_log_prob, log_prob, advantages, eos_mask, cliprange)
 
     pg_loss = verl_F.masked_mean(torch.max(pg_losses, pg_losses2), eos_mask)
     pg_clipfrac = verl_F.masked_mean(torch.gt(pg_losses2, pg_losses).float(), eos_mask)
+
     return pg_loss, pg_clipfrac, ppo_kl
 
 

@@ -147,7 +147,11 @@ class DataParallelPPOActor(BasePPOActor):
             grad_norm = self.actor_module.clip_grad_norm_(max_norm=self.config.grad_clip)
         else:
             grad_norm = torch.nn.utils.clip_grad_norm_(self.actor_module.parameters(), max_norm=self.config.grad_clip)
-        self.actor_optimizer.step()
+        # make this one highly robust by directly delete updates that exceed the grad_clip
+        # if grad_norm > self.config.grad_clip*10:
+        #     return torch.zeros_like(grad_norm)
+        # else:
+        #     self.actor_optimizer.step()
         return grad_norm
 
     def compute_log_prob(self, data: DataProto) -> torch.Tensor:
