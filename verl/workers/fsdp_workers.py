@@ -382,7 +382,10 @@ class ActorRolloutRefWorker(Worker):
             data = self.ulysses_sharding_manager.preprocess_data(data=data)
             # perform training
             with Timer(name='update_policy', logger=None) as timer:
-                metrics = self.actor.update_policy(data=data)
+                if self.config.actor.single == 'True':
+                    metrics = self.actor.update_policy_single(data=data)
+                else:
+                    metrics = self.actor.update_policy(data=data)
             delta_time = timer.last
             # global_num_tokens = data.meta_info['global_token_num']
             # estimated_flops, promised_flops = self.flops_counter.estimate_flops(global_num_tokens, delta_time)

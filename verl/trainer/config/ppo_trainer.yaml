@@ -49,6 +49,7 @@ actor_rollout_ref:
       grad_offload: False
       optimizer_offload: False
       fsdp_size: -1
+    single: False # insane idea: merge actor and reward model into a single model
   ref:
     fsdp_config:
       param_offload: False

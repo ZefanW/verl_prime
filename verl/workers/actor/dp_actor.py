@@ -276,3 +276,88 @@ class DataParallelPPOActor(BasePPOActor):
         torch.cuda.synchronize()
         torch.distributed.barrier()
         return metrics
+
+    def update_policy_single(self, data: DataProto):
+        """
+        考虑到gt reward和process目前都没有正面效果，存在一个策略极致压缩online reward model reinforce的开销，即直接合并reward model和actor model
+        最终两个model同时使用两个loss更新。由于grad norm来看reward model完全dominate，
+        """
+        self.actor_module.train()
+
+        assert self.config.ppo_mini_batch_size % self.config.ppo_micro_batch_size == 0
+        self.gradient_accumulation = self.config.ppo_mini_batch_size // self.config.ppo_micro_batch_size
+        temperature = data.meta_info['temperature']  # temperature must be in the data.meta_info to avoid slient error
+
+        select_keys = ['responses', 'input_ids', 'attention_mask', 'position_ids', 'old_log_probs', 'advantages', 'acc']
+        batch = data.select(batch_keys=select_keys).batch
+
+        # Split to make minibatch iterator for updating the actor
+        # See PPO paper for details. https://arxiv.org/abs/1707.06347
+        dataloader = batch.split(self.config.ppo_mini_batch_size)
+
+        metrics = {}
+        for batch_idx, data in enumerate(dataloader):
+            # split batch into micro_batches
+            mini_batch = data
+            if self.config.use_dynamic_bsz:
+                max_token_len = self.config.ppo_max_token_len_per_gpu * self.ulysses_sequence_parallel_size
+                micro_batches, _ = rearrange_micro_batches(batch=mini_batch, max_token_len=max_token_len)
+            else:
+                # split batch into micro_batches
+                micro_batches = mini_batch.split(self.config.ppo_micro_batch_size)
+
+            self.actor_optimizer.zero_grad()
+
+            for data in micro_batches:
+                data = data.cuda()  # actor device is cpu when using offload
+                responses = data['responses']
+                response_length = responses.size(1)
+                attention_mask = data['attention_mask']
+                response_mask = attention_mask[:, -response_length:]
+                old_log_prob = data['old_log_probs']
+                # advantages = data['advantages']
+
+                clip_ratio = self.config.clip_ratio
+                entropy_coeff = self.config.entropy_coeff
+
+                # all return: (bsz, response_length)
+                entropy, log_prob = self._forward_micro_batch(micro_batch=data, temperature=temperature)
+
+                reward_unormalized = (log_prob - old_log_prob) * response_mask
+
+                dpo_loss =   torch.nn.functional.binary_cross_entropy((reward_unormalized.sum(dim=1) * 0.05).sigmoid(), data['acc'])
+
+                advantages = verl_F.masked_whiten(response_mask * reward_unormalized.sum(dim=1, keepdim=True), response_mask)
+
+                pg_loss, pg_clipfrac, ppo_kl = core_algos.compute_policy_loss(old_log_prob=old_log_prob,
+                                                                              log_prob=log_prob,
+                                                                              advantages=advantages,
+                                                                              eos_mask=response_mask,
+                                                                              cliprange=clip_ratio)
+                # compute entropy loss from entropy
+                entropy_loss = verl_F.masked_mean(entropy, response_mask)
+
+                # compute policy loss
+                # policy_loss = pg_loss - entropy_loss * entropy_coeff
+
+                policy_loss = pg_loss + dpo_loss*0.01 # dpo loss creates insanely high grade norm
+
+                loss = policy_loss / self.gradient_accumulation
+                loss.backward()
+
+                data = {
+                    'actor/entropy_loss': entropy_loss.detach().item(),
+                    'actor/pg_loss': pg_loss.detach().item(),
+                    'actor/pg_clipfrac': pg_clipfrac.detach().item(),
+                    'actor/ppo_kl': ppo_kl.detach().item(),
+                    'actor/dpo_loss': dpo_loss.detach().item(),
+                }
+                append_to_dict(metrics, data)
+
+            grad_norm = self._optimizer_step()
+            data = {'actor/grad_norm': grad_norm.detach().item()}
+            append_to_dict(metrics, data)
+        self.actor_optimizer.zero_grad()
+        torch.cuda.synchronize()
+        torch.distributed.barrier()
+        return metrics
