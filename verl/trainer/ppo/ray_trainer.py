@@ -709,6 +709,20 @@ class RayPRIMETrainer(object):
                                                          kl_penalty=self.config.algorithm.kl_penalty)
                     metrics.update(kl_metrics)
 
+                    # if there is an adaptive entropy controller, learn the entropy_coef here. because the batch size is quite large, we set the learning rate to 0.01
+                    if self.config.actor_rollout_ref.actor.entropy_mode == 'adaptive':
+                        entropy_target = self.config.actor_rollout_ref.actor.entropy_coeff
+                        if self.global_steps == 0:
+                            entropy_coeff = 0
+                        response_length = batch.batch['responses'].shape[-1]
+                        log_prob = batch.batch['old_log_probs'][:,-response_length:]
+                        eos_mask = batch.batch['attention_mask'][:, -response_length:]
+                        entropy_current = core_algos.compute_entropy_loss(log_prob, eos_mask)
+                        entropy_coeff += 0.01 * (entropy_target - entropy_current) # if entropy is too small, we should increase this coefficient
+                        batch.meta_info['entropy_coeff'] = entropy_coeff
+                        metrics['actor/entropy_coeff'] = entropy_coeff
+
+
                     # compute advantages, executed on the driver process
                     batch = compute_advantage(batch,
                                               self.config.algorithm.gamma,

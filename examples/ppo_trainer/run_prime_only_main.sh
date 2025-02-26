@@ -18,7 +18,7 @@ COMBINE_PATH=$BASE_DIR/datasets/combine1203
 CODE_PATH=$BASE_DIR/datasets/code_1113_short
 SOLVABLE_NUMINA_PATH=/home/test/test05/cgq/data/numina_solvable
 PROJECT_NAME='o1_rm'
-EXPERIMENT_NAME='s28-prime-fastrm-nogt'
+EXPERIMENT_NAME='s28-prime-fastrm-nogt-0.1E'
 
 python3 -m verl.trainer.main_ppo \
     data.train_files=["$SOLVABLE_NUMINA_PATH/train.parquet","$CODE_PATH/train.parquet"] \
@@ -34,7 +34,8 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.actor.fsdp_config.param_offload=True \
     actor_rollout_ref.actor.fsdp_config.grad_offload=True \
     actor_rollout_ref.actor.fsdp_config.optimizer_offload=True \
-    actor_rollout_ref.actor.entropy_coeff=0. \
+    actor_rollout_ref.actor.entropy_coeff=0.1 \
+    actor_rollout_ref.actor.entropy_mode=adaptive \
     actor_rollout_ref.rollout.log_prob_micro_batch_size=64 \
     actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
     actor_rollout_ref.rollout.name=vllm \

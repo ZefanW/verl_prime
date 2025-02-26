@@ -219,6 +219,8 @@ class DataParallelPPOActor(BasePPOActor):
         # See PPO paper for details. https://arxiv.org/abs/1707.06347
         dataloader = batch.split(self.config.ppo_mini_batch_size)
 
+
+
         metrics = {}
         for batch_idx, data in enumerate(dataloader):
             # split batch into micro_batches
@@ -242,7 +244,7 @@ class DataParallelPPOActor(BasePPOActor):
                 advantages = data['advantages']
 
                 clip_ratio = self.config.clip_ratio
-                entropy_coeff = self.config.entropy_coeff
+
 
                 # all return: (bsz, response_length)
                 entropy, log_prob = self._forward_micro_batch(micro_batch=data, temperature=temperature)
@@ -256,6 +258,13 @@ class DataParallelPPOActor(BasePPOActor):
                 entropy_loss = verl_F.masked_mean(entropy, response_mask)
 
                 # compute policy loss
+                if self.config.entropy_mode == 'adaptive':
+                    # entropy loss及adaptive方程在trainer部分实现，这样可以全局同步
+                    entropy_coeff = data.meta_info['entropy_coeff']
+                elif self.config.entropy_mode == 'fixed':
+                    entropy_coeff = self.config.entropy_coeff
+                else:
+                    raise NotImplementedError
                 policy_loss = pg_loss - entropy_loss * entropy_coeff
 
                 loss = policy_loss / self.gradient_accumulation
