@@ -165,7 +165,7 @@ def compute_gae_value_returns(data: verl.DataProto, eos_mask: torch.Tensor, n_sa
         for i in range(q.shape[0]):
             if config.reward_model.prime_use_gt:
                 q[i, valid_response_length[i] -
-              1] = token_level_rewards[i, valid_response_length[i] - 1] - q[i, :valid_response_length[i] - 1].sum()
+                  1] = token_level_rewards[i, valid_response_length[i] - 1] - q[i, :valid_response_length[i] - 1].sum()
             q[i, valid_response_length[i]:] = 0
 
         for t in reversed(range(gen_len)):

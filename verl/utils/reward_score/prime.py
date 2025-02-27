@@ -61,12 +61,14 @@ async def parallel_evaluate_continual_async(completions, references, tasks, num_
         try:
             results = await asyncio.gather(*tasks_async, return_exceptions=False)
         except Exception as exc:
-            print('Error encountered in parallel evaluation! now shutting all evaluation workers down to prevent starvation')
+            print(
+                'Error encountered in parallel evaluation! now shutting all evaluation workers down to prevent starvation'
+            )
             for pid, proc in executor._processes.items():
                 try:
                     proc.kill()
                 except Exception as kill_err:
-                    print('shut down failed: '+str(kill_err))
+                    print('shut down failed: ' + str(kill_err))
                 finally:
                     raise
 
@@ -101,6 +103,9 @@ def compute_score(completions, references, tasks):
     # three lists should have identical length
     # TODO: make this one completely asynchronous, which means the main process can do other things(e.g., forwarding reward model) while computing score
     assert len(completions) == len(references) == len(tasks)
+
+    # before start testing, we should truncate completions to prevent long completions stuffing the pipe
+
     try:
         return asyncio.run(parallel_evaluate_continual_async(completions, references, tasks, num_processes=64))
     except asyncio.TimeoutError as e:

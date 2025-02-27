@@ -26,7 +26,7 @@ import verl.utils.hdfs_io as hdfs_io
 import verl.utils.torch_functional as verl_F
 from omegaconf import DictConfig, open_dict
 from transformers import AutoModelForCausalLM, AutoModelForTokenClassification
-from liger_kernel.transformers import AutoLigerKernelForCausalLM
+# from liger_kernel.transformers import AutoLigerKernelForCausalLM
 
 from verl import DataProto
 from verl.single_controller.base import Worker
@@ -128,7 +128,7 @@ class ActorRolloutRefWorker(Worker):
         from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, ShardingStrategy, MixedPrecision
         from torch import optim
         from transformers import AutoModelForCausalLM, AutoModelForTokenClassification
-        from liger_kernel.transformers import AutoLigerKernelForCausalLM
+        # from liger_kernel.transformers import AutoLigerKernelForCausalLM
 
         log_gpu_memory_usage('Before init from HF AutoModel', logger=logger)
         local_path = copy_local_path_from_hdfs(model_path)
@@ -170,10 +170,10 @@ class ActorRolloutRefWorker(Worker):
         with init_context(), warnings.catch_warnings():
             warnings.simplefilter("ignore")
             actor_module = AutoModelForCausalLM.from_pretrained(pretrained_model_name_or_path=local_path,
-                                                                      torch_dtype=torch_dtype,
-                                                                      config=actor_model_config,
-                                                                      attn_implementation='flash_attention_2',
-                                                                      trust_remote_code=trust_remote_code)
+                                                                torch_dtype=torch_dtype,
+                                                                config=actor_model_config,
+                                                                attn_implementation='flash_attention_2',
+                                                                trust_remote_code=trust_remote_code)
             # some parameters may not in torch_dtype. TODO(zhangchi.usc1992) remove this after we switch to fsdp2
             actor_module.to(torch_dtype)
 
@@ -815,7 +815,7 @@ class RewardModelWorker(Worker):
         from transformers import AutoConfig
         from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, ShardingStrategy, CPUOffload
         from transformers import AutoModelForCausalLM, AutoModelForTokenClassification
-        from liger_kernel.transformers import AutoLigerKernelForCausalLM
+        # from liger_kernel.transformers import AutoLigerKernelForCausalLM
         # download the checkpoint from hdfs
         local_path = copy_local_path_from_hdfs(config.model.path)
 
@@ -1083,7 +1083,7 @@ class PRIMERewardModelWorker(Worker):
         from transformers import AutoModelForSequenceClassification, AutoTokenizer, AutoConfig
         from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, ShardingStrategy, CPUOffload
         from transformers import AutoModelForCausalLM, AutoModelForTokenClassification
-        from liger_kernel.transformers import AutoLigerKernelForCausalLM
+        # from liger_kernel.transformers import AutoLigerKernelForCausalLM
 
         # download the checkpoint from hdfs
         local_path = copy_local_path_from_hdfs(config.prime_model.path)
@@ -1095,8 +1095,7 @@ class PRIMERewardModelWorker(Worker):
             input_tokenizer_local_path = copy_local_path_from_hdfs(config.prime_model.input_tokenizer)
             self.input_tokenizer = hf_tokenizer(input_tokenizer_local_path,
                                                 trust_remote_code=config.prime_model.get('trust_remote_code', False))
-        self.tokenizer = hf_tokenizer(local_path,
-                                      trust_remote_code=config.prime_model.get('trust_remote_code', False))
+        self.tokenizer = hf_tokenizer(local_path, trust_remote_code=config.prime_model.get('trust_remote_code', False))
 
         trust_remote_code = config.prime_model.get('trust_remote_code', False)
         model_config = AutoConfig.from_pretrained(local_path, trust_remote_code=trust_remote_code)
@@ -1115,10 +1114,10 @@ class PRIMERewardModelWorker(Worker):
 
         with init_context(), warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            reward_module = AutoLigerKernelForCausalLM.from_pretrained(pretrained_model_name_or_path=local_path,
-                                                                       torch_dtype=torch.float32,
-                                                                       attn_implementation='flash_attention_2',
-                                                                       trust_remote_code=trust_remote_code)
+            reward_module = AutoModelForCausalLM.from_pretrained(pretrained_model_name_or_path=local_path,
+                                                                 torch_dtype=torch.float32,
+                                                                 attn_implementation='flash_attention_2',
+                                                                 trust_remote_code=trust_remote_code)
             reward_module.to(torch.float32)
             if enable_gradient_checkpointing:
                 reward_module.gradient_checkpointing_enable()
@@ -1127,7 +1126,7 @@ class PRIMERewardModelWorker(Worker):
                                          reduce_dtype=torch.float32,
                                          buffer_dtype=torch.float32)
         if config.prime_model.get("ref_type", 'freeze') == 'freeze':
-            reference_module = AutoLigerKernelForCausalLM.from_pretrained(
+            reference_module = AutoModelForCausalLM.from_pretrained(
                 pretrained_model_name_or_path=copy_local_path_from_hdfs(config.prime_model.ref_path),
                 torch_dtype=torch.bfloat16,
                 attn_implementation='flash_attention_2',
@@ -1265,7 +1264,7 @@ class PRIMERewardModelWorker(Worker):
         batch_size, seqlen = input_ids.shape
         attention_mask = micro_batch['attention_mask']
         position_ids = micro_batch['position_ids']
-
+        response_length = micro_batch['responses'].size(-1)
         # 分成有padding和无padding两种情况，计算完成后最终都会被还原成原本的shape
         # TODO： 检查是否需要再封装，应该是不用的
         if self.use_remove_padding:
@@ -1298,7 +1297,7 @@ class PRIMERewardModelWorker(Worker):
             rm_log_labels = pad_input(hidden_states=rm_log_labels.unsqueeze(-1),
                                       indices=indices,
                                       batch=batch_size,
-                                      seqlen=seqlen).squeeze(-1)
+                                      seqlen=seqlen).squeeze(-1)[:, -response_length - 1:-1]
 
         else:
             rm_output_logits = self.reward_module(input_ids=micro_batch['input_ids'],
@@ -1326,7 +1325,7 @@ class PRIMERewardModelWorker(Worker):
                     ref_log_labels = pad_input(hidden_states=ref_log_labels.unsqueeze(-1),
                                                indices=indices,
                                                batch=batch_size,
-                                               seqlen=seqlen).squeeze(-1)
+                                               seqlen=seqlen).squeeze(-1)[:, -response_length - 1:-1]
                 else:
                     ref_output_logits = self.reference_module(input_ids=micro_batch['input_ids'],
                                                               attention_mask=micro_batch['attention_mask'],
@@ -1363,13 +1362,13 @@ class PRIMERewardModelWorker(Worker):
                 # change the last token and mask out all paddings to make this process easier
                 for i in range(q.shape[0]):
                     if self.config.prime_use_gt:
-                        q_[i,max_positions[i]-1] = acc[i]-q_[i,:max_positions[i]-1].sum()
-                    q_[i,max_positions[i]:] =0
+                        q_[i, max_positions[i] - 1] = acc[i] - q_[i, :max_positions[i] - 1].sum()
+                    q_[i, max_positions[i]:] = 0
 
                 for t in reversed(range(num_actions)):
                     delta = q_[:, t]
                     lastgaelam = delta + lam * lastgaelam
-                    r[:,t] = lastgaelam
+                    r[:, t] = lastgaelam
 
             step_ends = []
 

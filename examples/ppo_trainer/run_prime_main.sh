@@ -72,5 +72,5 @@ python3 -m verl.trainer.main_ppo \
     reward_model.prime_model.input_tokenizer=null \
     reward_model.mini_batch_size=64 \
     trainer.default_local_dir=$BASE_DIR/checkpoints/$PROJECT_NAME/$EXPERIMENT_NAME \
-    actor_rollout_ref.model.use_remove_padding=True \
     trainer.val_before_train=False \
+#        actor_rollout_ref.model.use_remove_padding=True \

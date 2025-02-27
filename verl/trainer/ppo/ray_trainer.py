@@ -709,20 +709,6 @@ class RayPRIMETrainer(object):
                                                          kl_penalty=self.config.algorithm.kl_penalty)
                     metrics.update(kl_metrics)
 
-                    # if there is an adaptive entropy controller, learn the entropy_coef here. because the batch size is quite large, we set the learning rate to 0.01
-                    if self.config.actor_rollout_ref.actor.entropy_mode == 'adaptive':
-                        entropy_target = self.config.actor_rollout_ref.actor.entropy_coeff
-                        if self.global_steps == 0:
-                            entropy_coeff = 0
-                        response_length = batch.batch['responses'].shape[-1]
-                        log_prob = batch.batch['old_log_probs'][:,-response_length:]
-                        eos_mask = batch.batch['attention_mask'][:, -response_length:]
-                        entropy_current = core_algos.compute_entropy_loss(log_prob, eos_mask)
-                        entropy_coeff += 0.01 * (entropy_target - entropy_current) # if entropy is too small, we should increase this coefficient
-                        batch.meta_info['entropy_coeff'] = entropy_coeff
-                        metrics['actor/entropy_coeff'] = entropy_coeff
-
-
                     # compute advantages, executed on the driver process
                     batch = compute_advantage(batch,
                                               self.config.algorithm.gamma,
@@ -741,12 +727,32 @@ class RayPRIMETrainer(object):
 
                 # implement critic warmup
                 if self.config.trainer.critic_warmup <= self.global_steps:
+
+                    # if there is an adaptive entropy controller, learn the entropy_coef here. because the batch size is quite large, we set the learning rate to 0.01
+                    if self.config.actor_rollout_ref.actor.entropy_mode == 'adaptive':
+
+                        if self.global_steps == 0:
+                            entropy_coeff = 0
+                        batch.meta_info['entropy_coeff'] = entropy_coeff
+                        metrics['actor/entropy_coeff'] = entropy_coeff
+
                     # update actor
                     with Timer(name='update_actor', text="{name}: {seconds:.1f} seconds") as timer:
                         actor_output = self.actor_rollout_wg.update_actor(batch)
                     metrics['timing/update_actor'] = timer.last
                     actor_output_metrics = reduce_metrics(actor_output.meta_info['metrics'])
                     metrics.update(actor_output_metrics)
+
+                    # update entropy coeff
+                    if self.config.actor_rollout_ref.actor.entropy_mode == 'adaptive':
+                        entropy_target = self.config.actor_rollout_ref.actor.entropy_coeff
+                        # response_length = batch.batch['responses'].shape[-1]
+                        # log_prob = batch.batch['old_log_probs']
+                        # eos_mask = batch.batch['attention_mask'][:, -response_length:]
+                        # entropy_current = core_algos.compute_entropy_loss(log_prob, eos_mask)
+                        entropy_current = metrics['actor/entropy_loss']
+                        entropy_coeff += 0.01 * (entropy_target - entropy_current
+                                                )  # if entropy is too small, we should increase this coefficient
 
                 # validate
                 if self.val_reward_fn is not None and (self.global_steps + 1) % self.config.trainer.test_freq == 0:

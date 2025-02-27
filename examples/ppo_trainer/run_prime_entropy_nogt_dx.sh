@@ -15,7 +15,7 @@ HF_DIR=/data3/wzf/huggingface
 SOLVABLE_NUMINA_PATH=/data3/wzf/datasets/numina_solvable
 CODE_PATH=/data3/wzf/datasets/code_1113_short
 PROJECT_NAME='o1_rm'
-EXPERIMENT_NAME='s28-prime-fastrm-nogt-iprm-lam1.0'
+EXPERIMENT_NAME='s28-prime-fastrm-nogt-0.1E'
 
 PARALLEL_SIZE=2
 
@@ -33,11 +33,12 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.actor.fsdp_config.param_offload=True \
     actor_rollout_ref.actor.fsdp_config.grad_offload=True \
     actor_rollout_ref.actor.fsdp_config.optimizer_offload=True \
-    actor_rollout_ref.actor.entropy_coeff=0. \
+    actor_rollout_ref.actor.entropy_coeff=0.1 \
+    actor_rollout_ref.actor.entropy_mode=adaptive \
     actor_rollout_ref.rollout.log_prob_micro_batch_size=$((64*PARALLEL_SIZE)) \
     actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
     actor_rollout_ref.rollout.name=vllm \
-    actor_rollout_ref.rollout.gpu_memory_utilization=0.4 \
+    actor_rollout_ref.rollout.gpu_memory_utilization=0.5 \
     actor_rollout_ref.ref.log_prob_micro_batch_size=$((64*PARALLEL_SIZE)) \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
     algorithm.kl_ctrl.kl_coef=0.00 \
@@ -69,12 +70,13 @@ python3 -m verl.trainer.main_ppo \
     reward_model.prime_model.optim.lr=1e-6 \
     reward_model.prime_model.optim.grad_clip=10.0 \
     reward_model.prime_model.input_tokenizer=null \
-    reward_model.prime_lambda=1.0 \
+    reward_model.prime_lambda=0 \
     reward_model.mini_batch_size=$((64*PARALLEL_SIZE)) \
     trainer.default_local_dir=$BASE_DIR/checkpoints/$PROJECT_NAME/$EXPERIMENT_NAME \
     actor_rollout_ref.actor.ulysses_sequence_parallel_size=$PARALLEL_SIZE \
     actor_rollout_ref.rollout.tensor_model_parallel_size=$PARALLEL_SIZE \
     actor_rollout_ref.model.use_remove_padding=True \
+    trainer.val_before_train=False \
     verifier.reward_coef=0 \
 #    actor_rollout_ref.model.enable_gradient_checkpointing=True \
 

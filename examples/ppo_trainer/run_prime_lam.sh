@@ -18,8 +18,7 @@ COMBINE_PATH=$BASE_DIR/datasets/combine1203
 CODE_PATH=$BASE_DIR/datasets/code_1113_short
 SOLVABLE_NUMINA_PATH=/home/test/test05/cgq/data/numina_solvable
 PROJECT_NAME='o1_rm'
-EXPERIMENT_NAME='s28-prime-fastrm-iprm-lam0.5'
-
+EXPERIMENT_NAME='s28-prime-nogt-fastrm-iprm-lam0.5'
 python3 -m verl.trainer.main_ppo \
     data.train_files=["$SOLVABLE_NUMINA_PATH/train.parquet","$CODE_PATH/train.parquet"] \
     data.val_files=["$SOLVABLE_NUMINA_PATH/test.parquet","$CODE_PATH/test.parquet"] \
@@ -74,4 +73,5 @@ python3 -m verl.trainer.main_ppo \
     reward_model.prime_use_gt=False \
     reward_model.mini_batch_size=64 \
     trainer.default_local_dir=$BASE_DIR/checkpoints/$PROJECT_NAME/$EXPERIMENT_NAME \
-
+    actor_rollout_ref.model.use_remove_padding=False \
+    verifier.reward_coef=0 \
