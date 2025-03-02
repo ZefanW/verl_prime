@@ -68,7 +68,7 @@ python3 -m verl.trainer.main_ppo \
     reward_model.prime_model.optim.lr=1e-6 \
     reward_model.prime_model.optim.grad_clip=10.0 \
     reward_model.prime_model.input_tokenizer=null \
-    reward_model.prime_lambda=0.5 \
+    reward_model.prime_lambda=0. \
     reward_model.mini_batch_size=$((64*PARALLEL_SIZE)) \
     trainer.default_local_dir=$BASE_DIR/checkpoints/$PROJECT_NAME/$EXPERIMENT_NAME \
     actor_rollout_ref.actor.ulysses_sequence_parallel_size=$PARALLEL_SIZE \

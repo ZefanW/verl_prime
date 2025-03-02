@@ -151,7 +151,7 @@ class DataParallelPPOActor(BasePPOActor):
         # if grad_norm > self.config.grad_clip*10:
         #     return torch.zeros_like(grad_norm)
         # else:
-        #     self.actor_optimizer.step()
+        self.actor_optimizer.step()
         return grad_norm
 
     def compute_log_prob(self, data: DataProto) -> torch.Tensor:

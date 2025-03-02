@@ -18,7 +18,7 @@ COMBINE_PATH=$BASE_DIR/datasets/combine1203
 CODE_PATH=$BASE_DIR/datasets/code_1113_short
 SOLVABLE_NUMINA_PATH=/home/test/test05/cgq/data/numina_solvable
 PROJECT_NAME='o1_rm'
-EXPERIMENT_NAME='s28-prime-fastrm-gam0.95'
+EXPERIMENT_NAME='s28-prime-fastrm-rm_gam0.95'
 
 python3 -m verl.trainer.main_ppo \
     data.train_files=["$SOLVABLE_NUMINA_PATH/train.parquet","$CODE_PATH/train.parquet"] \
