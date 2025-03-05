@@ -1459,6 +1459,10 @@ class PRIMERewardModelWorker(Worker):
                                                                      acc,
                                                                      eos_mask=eos_mask,
                                                                      beta=beta)
+                    elif self.config.prime_model.loss_type == 'td0':
+                        dpo_loss = core_algos.compute_td0_loss_rm(original_token_level_score, acc, eos_mask=eos_mask, beta=beta)
+                    elif self.config.prime_model.loss_type == 'td1':
+                        dpo_loss = core_algos.compute_td1_loss_rm(original_token_level_score, acc, eos_mask=eos_mask, beta=beta)
                     else:
                         raise NotImplementedError
 

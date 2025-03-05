@@ -178,7 +178,7 @@ reward_model:
       weight_decay: 0.
       grad_clip: 1.0
     beta_train: 0.05
-    loss_type: ce # currently only supports ce loss
+    loss_type: ce # now supports td0, td1, pseudo dpo
 
 
 

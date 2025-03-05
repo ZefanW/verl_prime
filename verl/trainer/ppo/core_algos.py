@@ -510,6 +510,26 @@ def compute_ce_dpo_loss_rm(token_level_scores, acc, eos_mask, beta):
     cur_dpo_loss = torch.nn.functional.binary_cross_entropy(cur_scores, acc)
     return cur_dpo_loss
 
+def compute_td0_loss_rm(token_level_scores, acc, eos_mask, beta):
+    """
+
+    模仿TD training，缩小两个V之间的差值，最后一个V则拟合acc
+    直接用lambda=0的版本
+
+    """
+    cur_q = ((token_level_scores * eos_mask) * beta)
+    loss_last = ((cur_q.sum(dim=-1)-acc)**2 / 2).sum()
+    loss_inter = ((cur_q**2)**2 / 2).sum()
+    return loss_last+loss_inter
+
+def compute_td1_loss_rm(token_level_scores, acc, eos_mask, beta):
+    """
+    td1，所有V直接拟合acc
+    """
+    cur_q = ((token_level_scores * eos_mask) * beta)
+    cur_q_accu = cur_q.cumsum(dim=-1)*eos_mask
+    loss = (((cur_q_accu - acc.unsqueeze(-1)) * eos_mask)**2 / 2).sum()
+    return loss
 
 def compute_dpo_accuracy(token_level_scores, acc, eos_mask, n_samples):
     dpo_acc = []
