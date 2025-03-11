@@ -81,7 +81,7 @@ def compute_ce_dpo_loss_rm(token_level_scores, acc, eos_mask, beta):
     return cur_dpo_loss
 
 
-def compute_detach_dpo_loss_rm(token_level_scores, acc, Q_bc, acc_bc, eos_mask, beta, bon_mode='none'):
+def compute_detach_dpo_loss_rm(token_level_scores, acc, Q_bc, acc_bc, eos_mask, beta, bon_mode='none', use_ce=False):
     # we always assume that the BoN size equals n_samples
     # mode1: use acc as rm
     # mode2: use Q as rm
@@ -92,10 +92,11 @@ def compute_detach_dpo_loss_rm(token_level_scores, acc, Q_bc, acc_bc, eos_mask, 
             Q_chosen = Q_bc[i][acc_bc[i] < acc[i]]
         else:
             Q_chosen = Q_bc[i][acc_bc[i] > acc[i]]
-        if len(Q_chosen) > 0:
-            other_Q[i] = Q_chosen.mean() * beta
-        else:
+        if use_ce or len(Q_chosen) == 0:
             other_Q[i] = 0
+        else:
+            other_Q[i] = Q_chosen.mean() * beta
+
     dpo_loss = -torch.log(torch.sigmoid((cur_Q - other_Q) * ((acc > 0).float() * 2 - 1)))
     if bon_mode == 'none':
         dpo_loss = dpo_loss.mean()
@@ -142,3 +143,9 @@ def compute_dpo_accuracy(token_level_scores, acc, eos_mask, n_samples):
 
 def compute_dpo_abs_accuracy(token_level_scores, acc, eos_mask, n_samples):
     return (torch.sign((token_level_scores * eos_mask).sum(dim=-1)) == torch.sign(acc * 2 - 1)).float().mean()
+
+def compute_return_abs_accuracy(returns, acc):
+    return (torch.sign(returns[:, 0]) == torch.sign(acc*2-1)).float().mean()
+
+def compute_return_smoothness(returns):
+    return ((returns[:, :-1] - returns[:, 1:])**2).sum(dim=-1).mean()

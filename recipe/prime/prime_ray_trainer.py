@@ -34,6 +34,7 @@ from verl.trainer.ppo.ray_trainer import Role, WorkerType, ResourcePoolManager, 
 from verl.utils.checkpoint.checkpoint_manager import find_latest_ckpt_path
 from verl.utils.dataset.rl_dataset import RLHFDataset, collate_fn
 from . import prime_core_algos
+from .prime_core_algos import compute_return_abs_accuracy, compute_return_smoothness
 
 
 def compute_advantage(data: DataProto, adv_estimator, config):
@@ -183,7 +184,7 @@ class RayPRIMETrainer(RayPPOTrainer):
                                          max_prompt_length=self.config.data.max_prompt_length,
                                          filter_prompts=True,
                                          return_raw_chat=self.config.data.get('return_raw_chat', False),
-                                         truncation='error')
+                                         truncation=self.config.data.truncation)
         # use sampler for better ckpt resume
         if self.config.data.shuffle:
             train_dataloader_generator = torch.Generator()
@@ -205,7 +206,7 @@ class RayPRIMETrainer(RayPPOTrainer):
                                        max_prompt_length=self.config.data.max_prompt_length,
                                        filter_prompts=True,
                                        return_raw_chat=self.config.data.get('return_raw_chat', False),
-                                       truncation='error')
+                                       truncation=self.config.data.truncation)
         self.val_dataloader = DataLoader(dataset=self.val_dataset,
                                          batch_size=len(self.val_dataset),
                                          shuffle=True,
@@ -453,6 +454,12 @@ class RayPRIMETrainer(RayPPOTrainer):
                         batch = compute_advantage(batch,
                                                   adv_estimator=self.config.algorithm.adv_estimator,
                                                   config=self.config)
+
+                        # compute return accuracy here to see if the reward model is working fine
+                        metrics.update({'reward_model/return_acc': compute_return_abs_accuracy(batch.batch['returns'], batch.batch['acc']).item()})
+
+                        # check the smoothness of the return to see if the value model is working fine
+                        metrics.update({'reward_model/td0_loss': compute_return_smoothness(batch.batch['returns']).item()})
 
                     # update actor
                     with _timer('update_actor', timing_raw):
