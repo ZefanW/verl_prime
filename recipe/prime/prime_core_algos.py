@@ -87,6 +87,7 @@ def compute_detach_dpo_loss_rm(token_level_scores, acc, Q_bc, acc_bc, eos_mask, 
     # mode2: use Q as rm
     cur_Q = (token_level_scores * eos_mask).sum(dim=1) * beta
     other_Q = torch.zeros_like(cur_Q)
+    batch_size = token_level_scores.shape[0]
     for i in range(token_level_scores.shape[0]):
         if acc[i] > 0:
             Q_chosen = Q_bc[i][acc_bc[i] < acc[i]]
@@ -103,12 +104,16 @@ def compute_detach_dpo_loss_rm(token_level_scores, acc, Q_bc, acc_bc, eos_mask, 
     else:
         weight = torch.zeros_like(dpo_loss)
         n_samples = acc_bc.shape[1]
+        n_samples_valid = 2
         if bon_mode == 'bon_rm':
             for i in range(token_level_scores.shape[0]):
-                weight[i] = n_samples * torch.pow((Q_bc[i] * beta <= cur_Q[i]).float().mean(), n_samples - 1)
+                cur_response_weights = n_samples_valid * torch.pow((Q_bc[i].unsqueeze(0)<=Q_bc[i].unsqueeze(1)).float().mean(dim=-1), n_samples_valid-1)
+                weight[i] = n_samples_valid * torch.pow((Q_bc[i] * beta <= cur_Q[i]).float().mean(), n_samples_valid - 1) / cur_response_weights.sum() * n_samples / batch_size
         elif bon_mode == 'bon_acc':
             for i in range(token_level_scores.shape[0]):
-                weight[i] = n_samples * torch.pow((acc_bc[i] <= acc[i]).float().mean(), n_samples - 1)
+                cur_response_weights = n_samples_valid * torch.pow((acc_bc[i].unsqueeze(0)<=acc_bc[i].unsqueeze(1)).float().mean(dim=-1), n_samples_valid-1)
+                weight[i] = n_samples_valid * torch.pow((acc_bc[i] <= acc[i]).float().mean(), n_samples_valid - 1) / cur_response_weights.sum() * n_samples / batch_size
+
         else:
             raise NotImplementedError
         dpo_loss = (dpo_loss * weight).sum()

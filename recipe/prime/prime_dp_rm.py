@@ -172,7 +172,7 @@ class DataParallelPRIMERewardModel:
                     token_level_score[i, :max_positions[i] - 1] = r[i, :max_positions[i] - 1]
             elif self.config.prime_granularity == 'whole':
                 for i in range(micro_batch['input_ids'].shape[0]):
-                    token_level_score[i, max_positions[i] - 1] = r[i, :max_positions[i]]
+                    token_level_score[i, max_positions[i] - 1] = r[i, :max_positions[i]].sum()
             else:
                 raise NotImplementedError
 

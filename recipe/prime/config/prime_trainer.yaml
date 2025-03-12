@@ -55,6 +55,8 @@ reward_model:
   prime_norm: batch_norm # batch_norm or none. if set to none, the normalizer is beta_train
   mini_batch_size: ${actor_rollout_ref.actor.ppo_mini_batch_size}
   reward_manager: prime
+  lambda: 0.
+  prime_use_gt: False
 
 algorithm:
   adv_estimator: rloo

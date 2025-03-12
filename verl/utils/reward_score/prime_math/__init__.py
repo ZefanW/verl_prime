@@ -35,7 +35,7 @@ BAD_REGEXES = ["\^[0-9]+\^", "\^[0-9][0-9]+"]
 TUPLE_CHARS = "()[]"
 
 
-def timeout(timeout_seconds: int = 8):
+def timeout(timeout_seconds: int = 300):
     if os.name == "posix":
         import signal
 
@@ -236,7 +236,7 @@ def should_allow_eval(expr: str):
     return True
 
 
-@timeout(timeout_seconds=10)
+@timeout(timeout_seconds=300)
 def are_equal_under_sympy(ground_truth_normalized: str, given_normalized: str):
     are_equal = False
     try:
