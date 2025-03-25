@@ -107,12 +107,18 @@ def compute_detach_dpo_loss_rm(token_level_scores, acc, Q_bc, acc_bc, eos_mask, 
         n_samples_valid = 2
         if bon_mode == 'bon_rm':
             for i in range(token_level_scores.shape[0]):
-                cur_response_weights = n_samples_valid * torch.pow((Q_bc[i].unsqueeze(0)<=Q_bc[i].unsqueeze(1)).float().mean(dim=-1), n_samples_valid-1)
-                weight[i] = n_samples_valid * torch.pow((Q_bc[i] * beta <= cur_Q[i]).float().mean(), n_samples_valid - 1) / cur_response_weights.sum() * n_samples / batch_size
+                cur_response_weights = n_samples_valid * torch.pow(
+                    (Q_bc[i].unsqueeze(0) <= Q_bc[i].unsqueeze(1)).float().mean(dim=-1), n_samples_valid - 1)
+                weight[i] = n_samples_valid * torch.pow(
+                    (Q_bc[i] * beta <= cur_Q[i]).float().mean(),
+                    n_samples_valid - 1) / cur_response_weights.sum() * n_samples / batch_size
         elif bon_mode == 'bon_acc':
             for i in range(token_level_scores.shape[0]):
-                cur_response_weights = n_samples_valid * torch.pow((acc_bc[i].unsqueeze(0)<=acc_bc[i].unsqueeze(1)).float().mean(dim=-1), n_samples_valid-1)
-                weight[i] = n_samples_valid * torch.pow((acc_bc[i] <= acc[i]).float().mean(), n_samples_valid - 1) / cur_response_weights.sum() * n_samples / batch_size
+                cur_response_weights = n_samples_valid * torch.pow(
+                    (acc_bc[i].unsqueeze(0) <= acc_bc[i].unsqueeze(1)).float().mean(dim=-1), n_samples_valid - 1)
+                weight[i] = n_samples_valid * torch.pow(
+                    (acc_bc[i] <= acc[i]).float().mean(),
+                    n_samples_valid - 1) / cur_response_weights.sum() * n_samples / batch_size
 
         else:
             raise NotImplementedError
@@ -149,8 +155,10 @@ def compute_dpo_accuracy(token_level_scores, acc, eos_mask, n_samples):
 def compute_dpo_abs_accuracy(token_level_scores, acc, eos_mask, n_samples):
     return (torch.sign((token_level_scores * eos_mask).sum(dim=-1)) == torch.sign(acc * 2 - 1)).float().mean()
 
+
 def compute_return_abs_accuracy(returns, acc):
-    return (torch.sign(returns[:, 0]) == torch.sign(acc*2-1)).float().mean()
+    return (torch.sign(returns[:, 0]) == torch.sign(acc * 2 - 1)).float().mean()
+
 
 def compute_return_smoothness(returns):
     return ((returns[:, :-1] - returns[:, 1:])**2).sum(dim=-1).mean()

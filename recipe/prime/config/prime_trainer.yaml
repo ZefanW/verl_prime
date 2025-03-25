@@ -25,6 +25,7 @@ actor_rollout_ref:
     n: 4
   actor:
     entropy_coeff: 0.001
+    use_token_level_loss: False
 
 reward_model:
   enable: True
@@ -35,6 +36,7 @@ reward_model:
     tokenizer_path: ${actor_rollout_ref.model.path}
     enable_gradient_checkpointing: ${actor_rollout_ref.model.enable_gradient_checkpointing}
     ref_type: freeze
+    ref_clip: none
     fsdp_config:
       min_num_params: 0
       param_offload: ${actor_rollout_ref.actor.fsdp_config.param_offload}
@@ -72,3 +74,5 @@ trainer:
   experiment_name: examples
   val_before_train: False
   balance_batch: False
+  filter_batch_for_rm: True # you can also use all samples for the reward model
+  validate_sample: False

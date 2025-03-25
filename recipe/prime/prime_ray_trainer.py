@@ -165,8 +165,13 @@ class RayPRIMETrainer(RayPPOTrainer):
 
         # assert torch.cuda.is_available(), 'cuda must be available on driver'
 
-        super().__init__(config, tokenizer, role_worker_mapping, resource_pool_manager, ray_worker_group_cls, reward_fn,
-                         val_reward_fn)
+        super().__init__(config,
+                         tokenizer,
+                         role_worker_mapping,
+                         resource_pool_manager,
+                         ray_worker_group_cls,
+                         reward_fn=reward_fn,
+                         val_reward_fn=val_reward_fn)
 
         self.use_critic = False
 
@@ -399,9 +404,13 @@ class RayPRIMETrainer(RayPPOTrainer):
 
                     # filter the batch. 1/oversample_factor samples will be kept. If there is a filter, prompts passing it will be prioritized.
 
-                    batch = self.filter_and_downsample(scores, batch)
+                    if self.config.trainer.filter_batch_for_rm:  # is this is False, we do filtration exactly before the last compute_rm_score
+                        batch = self.filter_and_downsample(scores, batch)
                     batch.meta_info['n'] = self.config.actor_rollout_ref.rollout.n
                     n_samples = self.config.actor_rollout_ref.rollout.n
+
+                    batch.meta_info['avg_response_length'] = batch.batch[
+                        'attention_mask'][:, -batch.batch['responses'].shape[-1]:].sum(dim=-1).float().mean().item()
 
                     # recompute old_log_probs
                     with _timer('old_log_prob', timing_raw):
@@ -446,6 +455,8 @@ class RayPRIMETrainer(RayPPOTrainer):
                             else:
                                 raise NotImplementedError
                             batch = batch.union(reward_output)
+                            if not self.config.trainer.filter_batch_for_rm:
+                                batch = self.filter_and_downsample(scores, batch)
                             if 'metrics' in reward_output.meta_info.keys():
                                 reward_output_metrics = reduce_metrics(reward_output.meta_info['metrics'])
                                 metrics.update(reward_output_metrics)
@@ -456,10 +467,14 @@ class RayPRIMETrainer(RayPPOTrainer):
                                                   config=self.config)
 
                         # compute return accuracy here to see if the reward model is working fine
-                        metrics.update({'reward_model/return_acc': compute_return_abs_accuracy(batch.batch['returns'], batch.batch['acc']).item()})
+                        metrics.update({
+                            'reward_model/return_acc':
+                                compute_return_abs_accuracy(batch.batch['returns'], batch.batch['acc']).item()
+                        })
 
                         # check the smoothness of the return to see if the value model is working fine
-                        metrics.update({'reward_model/td0_loss': compute_return_smoothness(batch.batch['returns']).item()})
+                        metrics.update(
+                            {'reward_model/td0_loss': compute_return_smoothness(batch.batch['returns']).item()})
 
                     # update actor
                     with _timer('update_actor', timing_raw):

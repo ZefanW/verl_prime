@@ -228,6 +228,7 @@ class DataParallelPPOActor(BasePPOActor):
         self.actor_module.train()
 
         temperature = data.meta_info['temperature']  # temperature must be in the data.meta_info to avoid slient error
+        avg_response_length = data.meta_info['avg_response_length']
 
         select_keys = ['responses', 'input_ids', 'attention_mask', 'position_ids', 'old_log_probs', 'advantages']
         if self.config.use_kl_loss:
@@ -310,6 +311,10 @@ class DataParallelPPOActor(BasePPOActor):
                         loss = policy_loss * (len(data) / self.config.ppo_mini_batch_size)
                     else:
                         loss = policy_loss / self.gradient_accumulation
+                    if self.config.get('use_token_level_loss', False):
+                        # 消除gradient accu会导致的过度重视短文本问题
+                        loss = loss / avg_response_length * attention_mask[:, -response_length:].sum(-1).float().mean()
+
                     loss.backward()
 
                     data = {

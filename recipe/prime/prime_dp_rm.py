@@ -102,36 +102,51 @@ class DataParallelPRIMERewardModel:
                                                           dim=-1)  # (batch_size, seq_length, vocab_size)
             rm_log_labels = rm_log_prob.gather(dim=-1, index=micro_batch['input_ids'][:, 1:].unsqueeze(-1)).squeeze(
                 -1)  # (batch, seq_length)
+        #
+        # if self.ref_module is not None:
+        #     # do not have to pad again
+        #     with torch.no_grad(), torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+        #         if self.ulysses_sequence_parallel_size > 1 and self.use_remove_padding:
+        #             ref_output_logits = self.ref_module(input_ids=input_ids_rmpad,
+        #                                                 attention_mask=None,
+        #                                                 position_ids=position_ids_rmpad,
+        #                                                 use_cache=False).logits.squeeze(0)
+        #             ref_log_labels = verl_F.logprobs_from_logits(logits=ref_output_logits,
+        #                                                          labels=input_ids_rmpad_rolled)
+        #             ref_log_labels = gather_outpus_and_unpad(ref_log_labels,
+        #                                                      gather_dim=0,
+        #                                                      unpad_dim=0,
+        #                                                      padding_size=pad_size)
+        #             ref_log_labels = pad_input(hidden_states=ref_log_labels.unsqueeze(-1),
+        #                                        indices=indices,
+        #                                        batch=batch_size,
+        #                                        seqlen=seqlen).squeeze(-1)[:, -num_actions - 1:-1]
+        #         else:
+        #             ref_output_logits = self.ref_module(input_ids=micro_batch['input_ids'],
+        #                                                 attention_mask=micro_batch['attention_mask'],
+        #                                                 position_ids=micro_batch['position_ids']).logits
+        #             ref_log_prob = torch.nn.functional.log_softmax(ref_output_logits[:, :-1, :],
+        #                                                            dim=-1)  # (batch_size, seq_length, vocab_size)
+        #             ref_log_labels = ref_log_prob.gather(dim=-1,
+        #                                                  index=micro_batch['input_ids'][:, 1:].unsqueeze(-1)).squeeze(
+        #                                                      -1)  # (batch, seq_length)
+        # else:
+        #     ref_log_labels = micro_batch['old_log_probs']
 
-        if self.ref_module is not None:
-            # do not have to pad again
-            with torch.no_grad(), torch.autocast(device_type='cuda', dtype=torch.bfloat16):
-                if self.ulysses_sequence_parallel_size > 1 and self.use_remove_padding:
-                    ref_output_logits = self.ref_module(input_ids=input_ids_rmpad,
-                                                        attention_mask=None,
-                                                        position_ids=position_ids_rmpad,
-                                                        use_cache=False).logits.squeeze(0)
-                    ref_log_labels = verl_F.logprobs_from_logits(logits=ref_output_logits,
-                                                                 labels=input_ids_rmpad_rolled)
-                    ref_log_labels = gather_outpus_and_unpad(ref_log_labels,
-                                                             gather_dim=0,
-                                                             unpad_dim=0,
-                                                             padding_size=pad_size)
-                    ref_log_labels = pad_input(hidden_states=ref_log_labels.unsqueeze(-1),
-                                               indices=indices,
-                                               batch=batch_size,
-                                               seqlen=seqlen).squeeze(-1)[:, -num_actions - 1:-1]
-                else:
-                    ref_output_logits = self.ref_module(input_ids=micro_batch['input_ids'],
-                                                        attention_mask=micro_batch['attention_mask'],
-                                                        position_ids=micro_batch['position_ids']).logits
-                    ref_log_prob = torch.nn.functional.log_softmax(ref_output_logits[:, :-1, :],
-                                                                   dim=-1)  # (batch_size, seq_length, vocab_size)
-                    ref_log_labels = ref_log_prob.gather(dim=-1,
-                                                         index=micro_batch['input_ids'][:, 1:].unsqueeze(-1)).squeeze(
-                                                             -1)  # (batch, seq_length)
-        else:
+        if self.config.model.ref_type == 'freeze':
+            ref_log_labels = micro_batch['ref_log_prob']
+        elif self.config.model.ref_type == 'policy':
             ref_log_labels = micro_batch['old_log_probs']
+        elif self.config.model.ref_type == '2policy-freeze':
+            ref_log_labels = 2 * micro_batch['old_log_probs'] - micro_batch['ref_log_prob']
+        elif self.config.model.ref_type == 'policy+freeze':
+            ref_log_labels = (micro_batch['old_log_probs'] + micro_batch['ref_log_prob']) / 2
+        elif self.config.model.ref_type == '1-policy':
+            action_prob = torch.exp(micro_batch['old_log_probs'])[:, -num_actions:]
+            ref_log_labels = (1-action_prob)*micro_batch['ref_log_prob'][:, -num_actions:]
+            rm_log_labels[:, -num_actions:] *= (1-action_prob)
+        else:
+            raise NotImplementedError
 
         ref_log_labels.to(rm_log_labels.dtype)
         q = rm_log_labels[:, -num_actions:] - ref_log_labels[:, -num_actions:]  # this is actually diff of q
@@ -140,6 +155,20 @@ class DataParallelPRIMERewardModel:
         for i in range(micro_batch['input_ids'].shape[0]):
             q[i, max_positions[i]:] = 0
 
+        # may clip q value here
+        q_ = q.detach()
+
+        if self.config.model.ref_clip == 'none':
+            pass
+        elif self.config.model.ref_clip == 'freeze-abs':
+            bound = rm_log_labels[:, -num_actions:] - micro_batch['ref_log_prob'].to(rm_log_labels.dtype)[:,
+                                                                                                          -num_actions:]
+            q_ = torch.clip(q_, -bound.abs(), bound.abs())
+        elif self.config.model.ref_clip == 'freeze-abs-ub':
+            bound = rm_log_labels[:, -num_actions:] - micro_batch['ref_log_prob'].to(rm_log_labels.dtype)[:,
+                                                                                                          -num_actions:]
+            q_ = torch.clip(q_, None, bound.abs())
+
         # reward computation does not need gradient. only q needs
         with torch.no_grad():
 
@@ -147,11 +176,11 @@ class DataParallelPRIMERewardModel:
             lam = self.config.get('lambda', 0.)
             beta = self.config.model.get('beta_train', 0.05)
             if lam == 0.:
-                r = q * beta
+                r = q_ * beta
             else:
                 # reward coefficient takes no effect here
                 acc = micro_batch['acc']
-                q_ = q * beta
+                q_ = q_ * beta
                 r = torch.zeros_like(q)
                 lastgaelam = 0
                 # change the last token and mask out all paddings to make this process easier if we rely on outcome reward to calculate V
@@ -189,17 +218,24 @@ class DataParallelPRIMERewardModel:
         self.reward_optimizer.step()
         return grad_norm
 
-    def prime_norm(self, token_level_scores):
+    def prime_norm(self, token_level_scores, acc, eos_mask):
         if self.config.prime_norm == 'batch_norm':
             reverse_cumsum = torch.cumsum(token_level_scores.flip(dims=[1]), dim=-1).flip(dims=[1])
             token_level_scores = token_level_scores / (reverse_cumsum.abs().max() + 1e-6)
+        elif self.config.prime_norm == 'gt':  # use gt signal as normalizer by introducing a bias.
+            biases = (acc * 2 - 1 - token_level_scores.sum(dim=-1)) / eos_mask.sum(dim=-1)
+            token_level_scores += biases.unsqueeze(1)
+            token_level_scores[eos_mask == 0] = 0.
+
         return token_level_scores
 
     def compute_rm_score(self, data: DataProto):
         self.reward_module.eval()
         self.ref_module.eval()
         micro_batch_size = data.meta_info['micro_batch_size']
-        select_keys = ['responses', 'input_ids', 'attention_mask', 'position_ids', 'acc']
+        select_keys = [
+            'responses', 'input_ids', 'attention_mask', 'position_ids', 'acc', 'ref_log_prob', 'old_log_probs'
+        ]
         batch = data.select(batch_keys=select_keys).batch
         use_dynamic_bsz = data.meta_info['use_dynamic_bsz']
         prompt_length = data.batch['input_ids'].shape[-1] - data.batch['responses'].shape[-1]
@@ -221,7 +257,7 @@ class DataParallelPRIMERewardModel:
         rm_scores = torch.concat(rm_scores_lst, dim=0)
         q = torch.concat(q_lst, dim=0)
 
-        rm_scores = self.prime_norm(rm_scores)
+        rm_scores = self.prime_norm(rm_scores, batch['acc'], batch['attention_mask'][:, prompt_length:])
 
         if use_dynamic_bsz:
             indices = list(itertools.chain.from_iterable(indices))
@@ -241,7 +277,10 @@ class DataParallelPRIMERewardModel:
 
         beta = self.config.model.get('beta_train', 0.05)
 
-        select_keys = ['input_ids', 'responses', 'attention_mask', 'position_ids', 'acc', 'prompts']
+        select_keys = [
+            'input_ids', 'responses', 'attention_mask', 'position_ids', 'acc', 'prompts', 'ref_log_prob',
+            'old_log_probs'
+        ]
 
         for key in ['Q_bc', 'acc_bc']:
             if key in data.batch.keys():
@@ -334,7 +373,7 @@ class DataParallelPRIMERewardModel:
         rm_scores = torch.cat(rm_scores_lst, dim=0)
         q = torch.concat(q_lst, dim=0)
 
-        rm_scores = self.prime_norm(rm_scores)
+        rm_scores = self.prime_norm(rm_scores, batch['acc'], batch['attention_mask'][:, prompt_length:])
 
         metrics.update({
             'reward_model/reward': rm_scores.sum(dim=-1).mean().item(),

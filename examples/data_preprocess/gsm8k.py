@@ -38,9 +38,10 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
+    data_source_real = '/home/wangzefan/huggingface/gsm8k'
     data_source = 'openai/gsm8k'
 
-    dataset = datasets.load_dataset(data_source, 'main')
+    dataset = datasets.load_dataset(data_source_real, 'main')
 
     train_dataset = dataset['train']
     test_dataset = dataset['test']
