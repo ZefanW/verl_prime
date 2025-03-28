@@ -23,7 +23,7 @@ def _default_compute_score(data_source, solution_str, ground_truth, extra_info=N
         res = math.compute_score(solution_str, ground_truth)
     elif data_source in [
             'numina_aops_forum', 'numina_synthetic_math', 'numina_amc_aime', 'numina_synthetic_amc', 'numina_cn_k12',
-            'numina_olympiads'
+            'numina_olympiads', 'aime-aops', 'SYNTHETIC-1'
     ]:
         from . import prime_math
         res = prime_math.compute_score(solution_str, ground_truth)

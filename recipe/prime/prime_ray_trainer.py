@@ -199,8 +199,7 @@ class RayPRIMETrainer(RayPPOTrainer):
             sampler = SequentialSampler(data_source=self.train_dataset)
 
         self.train_dataloader = DataLoader(dataset=self.train_dataset,
-                                           batch_size=int(self.config.data.train_batch_size *
-                                                          self.config.data.oversample_factor),
+                                           batch_size=self.config.data.train_batch_size,
                                            drop_last=True,
                                            collate_fn=collate_fn,
                                            sampler=sampler)
@@ -353,11 +352,19 @@ class RayPRIMETrainer(RayPPOTrainer):
         self.global_steps += 1
 
         for epoch in range(self.config.trainer.total_epochs):
+            pending_batch_list = []
             for batch_dict in self.train_dataloader:
+                batch: DataProto = DataProto.from_single_dict(batch_dict)
+                pending_batch_list.append(batch)
+                if len(pending_batch_list)<self.config.data.oversample_factor:
+                    continue
+                batch = DataProto.concat(pending_batch_list)
+                pending_batch_list = []
+
                 metrics = {}
                 timing_raw = {}
 
-                batch: DataProto = DataProto.from_single_dict(batch_dict)
+
 
                 # pop those keys for generation
                 gen_batch = batch.pop(batch_keys=['input_ids', 'attention_mask', 'position_ids'])
@@ -406,6 +413,7 @@ class RayPRIMETrainer(RayPPOTrainer):
 
                     if self.config.trainer.filter_batch_for_rm:  # is this is False, we do filtration exactly before the last compute_rm_score
                         batch = self.filter_and_downsample(scores, batch)
+                    metrics['oversample_factor']=self.config.data.oversample_factor
                     batch.meta_info['n'] = self.config.actor_rollout_ref.rollout.n
                     n_samples = self.config.actor_rollout_ref.rollout.n
 
@@ -538,8 +546,22 @@ class RayPRIMETrainer(RayPPOTrainer):
             filter_mask[length_tensor >= self.config.data.max_response_length - 1] = False
 
         reorder_index = torch.argsort(filter_mask, descending=True)
+
+        # if self.config.data.resample and filter_mask.any():
+        #     positive_sample_num = int(filter_mask.sum().item())
+        #     while positive_sample_num < (len(batch) // self.config.data.oversample_factor // n_samples):
+        #         reorder_index[positive_sample_num:positive_sample_num * 2] = reorder_index[:positive_sample_num]
+        #         positive_sample_num *= 2
+
         reorder_index = (reorder_index.unsqueeze(-1) * n_samples + torch.arange(0, n_samples).unsqueeze(0)).view(-1)
+
         batch.reorder(reorder_index[:int(len(batch) //
                                          self.config.data.oversample_factor)])  # this operation is inplace
 
+        if self.config.data.resample: # 功能有所修改，现在含义是发现采样数量不足时，需要自动增加oversample_factor到满足要求为止。
+            # 乘性减：当实际需要的oversample数为当前数目的一般以下时才允许减小
+            required_oversample_factor = filter_mask.shape[0]//(filter_mask.sum().item()+1)+1
+            self.config.data.oversample_factor = max(self.config.data.oversample_factor, required_oversample_factor)
+            if self.config.data.oversample_factor > 2*required_oversample_factor:
+                self.config.data.oversample_factor = required_oversample_factor
         return batch

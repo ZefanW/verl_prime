@@ -143,8 +143,8 @@ class DataParallelPRIMERewardModel:
             ref_log_labels = (micro_batch['old_log_probs'] + micro_batch['ref_log_prob']) / 2
         elif self.config.model.ref_type == '1-policy':
             action_prob = torch.exp(micro_batch['old_log_probs'])[:, -num_actions:]
-            ref_log_labels = (1-action_prob)*micro_batch['ref_log_prob'][:, -num_actions:]
-            rm_log_labels[:, -num_actions:] *= (1-action_prob)
+            ref_log_labels = (1 - action_prob) * micro_batch['ref_log_prob'][:, -num_actions:]
+            rm_log_labels[:, -num_actions:] *= (1 - action_prob)
         else:
             raise NotImplementedError
 

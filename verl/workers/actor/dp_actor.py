@@ -228,7 +228,8 @@ class DataParallelPPOActor(BasePPOActor):
         self.actor_module.train()
 
         temperature = data.meta_info['temperature']  # temperature must be in the data.meta_info to avoid slient error
-        avg_response_length = data.meta_info['avg_response_length']
+        if self.config.get('use_token_level_loss', False):
+            avg_response_length = data.meta_info['avg_response_length']
 
         select_keys = ['responses', 'input_ids', 'attention_mask', 'position_ids', 'old_log_probs', 'advantages']
         if self.config.use_kl_loss:

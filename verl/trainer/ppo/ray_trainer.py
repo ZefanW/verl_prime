@@ -17,6 +17,7 @@ This trainer supports model-agonistic model initialization with huggingface
 """
 
 import os
+import statistics
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -381,7 +382,7 @@ def compute_throughout_metrics(batch, timing_raw, n_gpus):
 
 @contextmanager
 def _timer(name: str, timing_raw: Dict[str, float]):
-    with Timer(name=name, logger=None) as timer:
+    with Timer(name=name, logger=None, text="{name}: {seconds:.1f} seconds") as timer:
         yield
     timing_raw[name] = timer.last
 
@@ -545,7 +546,7 @@ class RayPPOTrainer(object):
                                          max_prompt_length=self.config.data.max_prompt_length,
                                          filter_prompts=True,
                                          return_raw_chat=self.config.data.get('return_raw_chat', False),
-                                         truncation='error')
+                                         truncation=self.config.data.truncation)
         # use sampler for better ckpt resume
         if self.config.data.shuffle:
             train_dataloader_generator = torch.Generator()
@@ -661,7 +662,7 @@ class RayPPOTrainer(object):
                 'eos_token_id': self.tokenizer.eos_token_id,
                 'pad_token_id': self.tokenizer.pad_token_id,
                 'recompute_log_prob': False,
-                'do_sample': self.config.validate_sample,
+                'do_sample': self.config.trainer.validate_sample,
                 'validate': True,
             }
 
@@ -911,11 +912,17 @@ class RayPPOTrainer(object):
         last_val_metrics = None
 
         for epoch in range(self.config.trainer.total_epochs):
+            pending_batch_list = []
             for batch_dict in self.train_dataloader:
+                batch: DataProto = DataProto.from_single_dict(batch_dict)
+                pending_batch_list.append(batch)
+                if len(pending_batch_list)<self.config.data.oversample_factor:
+                    continue
+                batch = DataProto.concat(pending_batch_list)
+                pending_batch_list = []
+
                 metrics = {}
                 timing_raw = {}
-
-                batch: DataProto = DataProto.from_single_dict(batch_dict)
 
                 # pop those keys for generation
                 if 'multi_modal_inputs' in batch.non_tensor_batch.keys():
@@ -957,6 +964,16 @@ class RayPPOTrainer(object):
                     # repeat to align with repeated responses in rollout
                     batch = batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True)
                     batch = batch.union(gen_batch_output)
+
+                    # add filter just like prime
+                    with _timer('verify', timing_raw):
+                        scores = self.reward_fn.verify(batch)
+                        metrics['acc'] = statistics.mean(scores)
+
+                    # filter the batch. 1/oversample_factor samples will be kept. If there is a filter, prompts passing it will be prioritized.
+
+                    from recipe.prime.prime_ray_trainer import RayPRIMETrainer
+                    batch = RayPRIMETrainer.filter_and_downsample(self, scores, batch)
 
                     # balance the number of valid tokens on each dp rank.
                     # Note that this breaks the order of data inside the batch.

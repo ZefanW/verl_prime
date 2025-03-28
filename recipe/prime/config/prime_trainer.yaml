@@ -15,6 +15,7 @@ data:
   oversample_factor: 4.0 # Sample more responses than the batch size. prompts satisfying the filter will be prioritized.
   filter_truncate: True
   truncation: right
+  resample: False
 
 actor_rollout_ref:
   hybrid_engine: True
@@ -24,7 +25,7 @@ actor_rollout_ref:
     # number of responses (i.e. num sample times)
     n: 4
   actor:
-    entropy_coeff: 0.001
+    entropy_coeff: 0.000 # this is sensitive!
     use_token_level_loss: False
 
 reward_model:

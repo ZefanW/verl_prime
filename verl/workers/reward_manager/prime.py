@@ -103,6 +103,14 @@ class PrimeRewardManager:
         ground_truth = [data_item.non_tensor_batch['reward_model']['ground_truth'] for data_item in data]
         data_sources = data.non_tensor_batch['data_source']
 
+        # 防卡死，提前为不同类别问题提取答案
+        abilities = data.non_tensor_batch['ability']
+        for i in range(len(abilities)):
+            if abilities[i] == 'math':
+                sequences_str[i] = '\\boxed{'+sequences_str[i].split('\\boxed{')[-1]
+            elif abilities[i] == 'code':
+                sequences_str[i] = sequences_str[i].split('```python')[-1].split('```')[0]
+
         assert len(sequences_str) == len(ground_truth) == len(data_sources)
         try:
             scores = asyncio.run(
@@ -110,7 +118,7 @@ class PrimeRewardManager:
                                              sequences_str,
                                              ground_truth,
                                              data_sources,
-                                             num_processes=64))
+                                             num_processes=24))
         except asyncio.TimeoutError as e:
             print('Global timeout in reward computing! Setting all as 0.')
             scores = [0. for _ in range(len(sequences_str))]

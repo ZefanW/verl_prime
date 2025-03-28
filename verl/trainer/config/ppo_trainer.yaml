@@ -11,8 +11,15 @@ data:
   return_raw_chat: False
   shuffle: True
   filter_overlong_prompts: False # for large-scale dataset, filtering overlong prompts could be timeconsuming. You should disable this and set `truncation='left'
-  truncation: error
+#  truncation: error
   image_key: images
+  filter_accuracy: True
+  accuracy_lower_bound: 0.2
+  accuracy_upper_bound: 0.8
+  oversample_factor: 4.0 # Sample more responses than the batch size. prompts satisfying the filter will be prioritized.
+  filter_truncate: True
+  truncation: right
+  resample: False
 
 actor_rollout_ref:
   hybrid_engine: True
@@ -182,3 +189,5 @@ trainer:
   remove_previous_ckpt_in_save: False
   del_local_ckpt_after_load: False
   default_local_dir: checkpoints/${trainer.project_name}/${trainer.experiment_name}
+  validate_sample: False
+  val_before_train: False

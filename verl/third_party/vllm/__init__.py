@@ -37,7 +37,7 @@ elif package_version == '0.4.2':
     from .vllm_v_0_4_2.llm import LLM
     from .vllm_v_0_4_2.llm import LLMEngine
     from .vllm_v_0_4_2 import parallel_state
-elif package_version == '0.5.4':
+elif package_version in [ '0.5.4', '0.5.4+cu118']:
     vllm_version = '0.5.4'
     from .vllm_v_0_5_4.llm import LLM
     from .vllm_v_0_5_4.llm import LLMEngine
