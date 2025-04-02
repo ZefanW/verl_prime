@@ -107,7 +107,7 @@ class PrimeRewardManager:
         abilities = data.non_tensor_batch['ability']
         for i in range(len(abilities)):
             if abilities[i] == 'math':
-                sequences_str[i] = '\\boxed{'+sequences_str[i].split('\\boxed{')[-1]
+                sequences_str[i] = '\\boxed{' + sequences_str[i].split('\\boxed{')[-1]
             elif abilities[i] == 'code':
                 sequences_str[i] = sequences_str[i].split('```python')[-1].split('```')[0]
 

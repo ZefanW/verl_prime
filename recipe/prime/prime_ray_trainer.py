@@ -19,6 +19,7 @@ This trainer supports model-agonistic model initialization with huggingface
 import os
 import statistics
 import uuid
+from collections import defaultdict
 from copy import deepcopy
 from pprint import pprint
 
@@ -35,6 +36,7 @@ from verl.utils.checkpoint.checkpoint_manager import find_latest_ckpt_path
 from verl.utils.dataset.rl_dataset import RLHFDataset, collate_fn
 from . import prime_core_algos
 from .prime_core_algos import compute_return_abs_accuracy, compute_return_smoothness
+from verl.trainer.ppo.core_algos import compute_reinforce_plus_plus_outcome_advantage
 
 
 def compute_advantage(data: DataProto, adv_estimator, config):
@@ -45,6 +47,26 @@ def compute_advantage(data: DataProto, adv_estimator, config):
         response_mask = attention_mask[:, -response_length:]
         advantages, returns = prime_core_algos.compute_rloo_advantage_return(data, response_mask,
                                                                              config.actor_rollout_ref.rollout.n, config)
+        data.batch['advantages'] = advantages
+        data.batch['returns'] = returns
+    elif adv_estimator == 'reinforce_plus_plus':
+        responses = data.batch['responses']
+        response_length = responses.size(-1)
+        attention_mask = data.batch['attention_mask']
+        response_mask = attention_mask[:, -response_length:]
+
+        reward_tensor = torch.zeros_like(response_mask, dtype=torch.float32)
+
+        prompt_ids = data.batch['prompts']
+        prompt_length = prompt_ids.shape[-1]
+        valid_response_length = data.batch['attention_mask'][:, prompt_length:].sum(-1)
+
+        reward_tensor[
+            torch.arange(0, valid_response_length.shape[0], dtype=torch.long, device=valid_response_length.device),
+            valid_response_length - 1] = data.batch['acc']
+
+        advantages, returns = compute_reinforce_plus_plus_outcome_advantage(reward_tensor, response_mask,
+                                                                            torch.tensor(1.0))
         data.batch['advantages'] = advantages
         data.batch['returns'] = returns
     else:
@@ -356,15 +378,13 @@ class RayPRIMETrainer(RayPPOTrainer):
             for batch_dict in self.train_dataloader:
                 batch: DataProto = DataProto.from_single_dict(batch_dict)
                 pending_batch_list.append(batch)
-                if len(pending_batch_list)<self.config.data.oversample_factor:
+                if len(pending_batch_list) < self.config.data.oversample_factor:
                     continue
                 batch = DataProto.concat(pending_batch_list)
                 pending_batch_list = []
 
                 metrics = {}
                 timing_raw = {}
-
-
 
                 # pop those keys for generation
                 gen_batch = batch.pop(batch_keys=['input_ids', 'attention_mask', 'position_ids'])
@@ -404,16 +424,22 @@ class RayPRIMETrainer(RayPPOTrainer):
                     # compute global_valid tokens
                     batch.meta_info['global_token_num'] = torch.sum(batch.batch['attention_mask'], dim=-1).tolist()
 
+                    metrics_ratio = self.count_prefix_ratio(batch)
+                    print(metrics_ratio)
+                    metrics.update(metrics_ratio)
+
                     # verify
                     with _timer('verify', timing_raw):
                         scores = self.reward_fn.verify(batch)
                         metrics['acc'] = statistics.mean(scores)
+                        metrics.update(self.metric_sources(batch))
 
                     # filter the batch. 1/oversample_factor samples will be kept. If there is a filter, prompts passing it will be prioritized.
+                    self.penalize(batch)
 
                     if self.config.trainer.filter_batch_for_rm:  # is this is False, we do filtration exactly before the last compute_rm_score
                         batch = self.filter_and_downsample(scores, batch)
-                    metrics['oversample_factor']=self.config.data.oversample_factor
+                    metrics['oversample_factor'] = self.config.data.oversample_factor
                     batch.meta_info['n'] = self.config.actor_rollout_ref.rollout.n
                     n_samples = self.config.actor_rollout_ref.rollout.n
 
@@ -524,44 +550,64 @@ class RayPRIMETrainer(RayPPOTrainer):
                             self._save_checkpoint()
                     return
 
-    def filter_and_downsample(self, scores, batch: DataProto):
-        """
-        downsample the batch according to oversample_factor
-        samples passing the filters will be prioritized
-        """
-        n_samples = int(self.config.actor_rollout_ref.rollout.n)
-        reward_matrix = torch.tensor(scores).reshape(-1, n_samples)
+    def count_prefix_ratio(self, batch):
+        # 检查同一个prompt里有多大比例的prefix是被share的
+        n_samples =self.config.actor_rollout_ref.rollout.n
+        responses = batch.batch['responses']
+        response_len = responses.size(1)
+        attention_mask = batch.batch['attention_mask'][:, -response_len: ]
+        prefix_mask = torch.zeros_like(attention_mask, dtype=torch.bool)
+        for start_pos in range(0, len(batch), n_samples):
+            for i in range(n_samples):
+                for j in range(i+1,n_samples):
+                    prefix_len = (responses[start_pos+i] == responses[start_pos+j]).cumprod(dim=0).sum()
+                    prefix_mask[[start_pos+i,start_pos+j],:prefix_len] = True
+        prefix_mask[attention_mask==0]=False
+        return {
+            'prefix_ratio': prefix_mask.sum().item() / attention_mask.sum().item()
+        }
 
-        filter_mask = torch.ones((reward_matrix.shape[0]), dtype=torch.bool)
+    def metric_sources(self, batch):
+        # 分别统计不同来源数据的acc
+        sources = batch.non_tensor_batch['data_source']
+        acc = batch.batch['acc'].cpu().tolist()
+        metrics = defaultdict(list)
+        for a,s in zip(acc, sources):
+            key_name = 'train_acc/'+s
+            metrics[key_name].append(a)
 
-        if self.config.data.filter_accuracy:
-            acc_tensor = torch.mean(reward_matrix, dim=-1)
-            filter_mask[(acc_tensor > self.config.data.accuracy_upper_bound) |
-                        (acc_tensor < self.config.data.accuracy_lower_bound)] = False
+        for k,v in metrics.items():
+            metrics[k] = statistics.mean(v)
+        return metrics
 
-        if self.config.data.filter_truncate:
-            length_matrix = batch.batch['attention_mask'][:, -batch.batch['responses'].shape[-1]:].sum(dim=-1).reshape(
-                -1, n_samples)
-            length_tensor = torch.max(length_matrix, dim=-1)[0]
-            filter_mask[length_tensor >= self.config.data.max_response_length - 1] = False
+    def penalize(self, batch):
+        if self.config.data.penalty is None:
+            self.config.data.penalty = []
+        response_ids = batch.batch['responses']
+        attention_mask = batch.batch['attention_mask'][:, -response_ids.shape[-1]:]
+        sequences_str = self.tokenizer.batch_decode(response_ids, skip_special_tokens=True)
+        abilities = batch.non_tensor_batch['ability']
+        for strategy in self.config.data.penalty:
+            if strategy == 'instruction_error':
+                for i in range(len(batch)):
+                    if abilities[i] == 'math':
+                        if sequences_str[i].find('print(')>0:
+                            batch.batch['acc'][i] /=2
 
-        reorder_index = torch.argsort(filter_mask, descending=True)
-
-        # if self.config.data.resample and filter_mask.any():
-        #     positive_sample_num = int(filter_mask.sum().item())
-        #     while positive_sample_num < (len(batch) // self.config.data.oversample_factor // n_samples):
-        #         reorder_index[positive_sample_num:positive_sample_num * 2] = reorder_index[:positive_sample_num]
-        #         positive_sample_num *= 2
-
-        reorder_index = (reorder_index.unsqueeze(-1) * n_samples + torch.arange(0, n_samples).unsqueeze(0)).view(-1)
-
-        batch.reorder(reorder_index[:int(len(batch) //
-                                         self.config.data.oversample_factor)])  # this operation is inplace
-
-        if self.config.data.resample: # 功能有所修改，现在含义是发现采样数量不足时，需要自动增加oversample_factor到满足要求为止。
-            # 乘性减：当实际需要的oversample数为当前数目的一般以下时才允许减小
-            required_oversample_factor = filter_mask.shape[0]//(filter_mask.sum().item()+1)+1
-            self.config.data.oversample_factor = max(self.config.data.oversample_factor, required_oversample_factor)
-            if self.config.data.oversample_factor > 2*required_oversample_factor:
-                self.config.data.oversample_factor = required_oversample_factor
+            elif strategy == 'multi_language':
+                pass
+            elif strategy == 'repetition':
+                for i in range(len(batch)):
+                    N=5
+                    response_id_list = response_ids[i][attention_mask[i]].cpu().tolist()
+                    if len(response_id_list)<N:
+                        continue
+                    unique_5grams = set()
+                    for j in range(len(response_id_list)-N+1):
+                        unique_5grams.add(tuple(response_id_list[j:j+5]))
+                    uniqueness = len(unique_5grams) / (len(response_id_list)-N+1)
+                    if uniqueness<0.3:
+                        batch.batch['acc'][i] /= 2
+            else:
+                raise NotImplementedError
         return batch

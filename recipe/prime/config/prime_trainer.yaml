@@ -16,6 +16,7 @@ data:
   filter_truncate: True
   truncation: right
   resample: False
+  penalty: [] # 各种惩罚性reward。instruction_error, repetition, multi_language
 
 actor_rollout_ref:
   hybrid_engine: True
@@ -25,15 +26,20 @@ actor_rollout_ref:
     # number of responses (i.e. num sample times)
     n: 4
   actor:
-    entropy_coeff: 0.000 # this is sensitive!
+    entropy_coeff: 0.000
     use_token_level_loss: False
+    optim:
+      weight_decay: 0.
+  ref:
+    fsdp_config:
+      param_offload: True
 
 reward_model:
   enable: True
   strategy: fsdp
   model:
     ref_path: ${reward_model.model.path}
-    use_remove_padding:  True
+    use_remove_padding: ${actor_rollout_ref.model.use_remove_padding}
     tokenizer_path: ${actor_rollout_ref.model.path}
     enable_gradient_checkpointing: ${actor_rollout_ref.model.enable_gradient_checkpointing}
     ref_type: freeze

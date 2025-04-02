@@ -39,8 +39,8 @@ actor_rollout_ref:
     grad_clip: 1.0
     clip_ratio: 0.2
     entropy_coeff: 0.001
-    use_kl_loss: False # True for GRPO
-    kl_loss_coef: 0.001 # for grpo
+    use_kl_loss: True # True for GRPO
+    kl_loss_coef: 0.000 # for grpo
     kl_loss_type: low_var_kl # for grpo
     ppo_epochs: 1
     shuffle: False
@@ -74,6 +74,7 @@ actor_rollout_ref:
     temperature: 1.0
     top_k: -1 # 0 for hf rollout, -1 for vllm rollout
     top_p: 1
+    stop: null
     use_fire_sampling: False # https://arxiv.org/abs/2410.21236
     prompt_length: ${data.max_prompt_length}  # not use for opensource
     response_length: ${data.max_response_length}
@@ -87,7 +88,7 @@ actor_rollout_ref:
     tensor_model_parallel_size: 2
     max_num_batched_tokens: 8192
     max_model_len: null
-    max_num_seqs: 1024
+    max_num_seqs: 256
     log_prob_micro_batch_size: null # will be deprecated, use log_prob_micro_batch_size_per_gpu
     log_prob_micro_batch_size_per_gpu: null
     log_prob_use_dynamic_bsz: ${actor_rollout_ref.actor.use_dynamic_bsz}
@@ -107,6 +108,7 @@ critic:
     min_lr_ratio: null   # only useful for warmup with cosine
     warmup_style: constant  # select from constant/cosine
     total_training_steps: -1  # must be override by program
+    weight_decay: 0.
   model:
     path: ~/models/deepseek-llm-7b-chat
     tokenizer_path: ${actor_rollout_ref.model.path}

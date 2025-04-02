@@ -916,7 +916,7 @@ class RayPPOTrainer(object):
             for batch_dict in self.train_dataloader:
                 batch: DataProto = DataProto.from_single_dict(batch_dict)
                 pending_batch_list.append(batch)
-                if len(pending_batch_list)<self.config.data.oversample_factor:
+                if len(pending_batch_list) < self.config.data.oversample_factor:
                     continue
                 batch = DataProto.concat(pending_batch_list)
                 pending_batch_list = []
@@ -970,10 +970,13 @@ class RayPPOTrainer(object):
                         scores = self.reward_fn.verify(batch)
                         metrics['acc'] = statistics.mean(scores)
 
+                    print('verify complete')
+
                     # filter the batch. 1/oversample_factor samples will be kept. If there is a filter, prompts passing it will be prioritized.
 
-                    from recipe.prime.prime_ray_trainer import RayPRIMETrainer
-                    batch = RayPRIMETrainer.filter_and_downsample(self, scores, batch)
+                    batch = self.filter_and_downsample(scores, batch)
+
+                    print('filter_and_downsample complete')
 
                     # balance the number of valid tokens on each dp rank.
                     # Note that this breaks the order of data inside the batch.
@@ -1076,3 +1079,45 @@ class RayPPOTrainer(object):
                     return
 
                 self.global_steps += 1
+
+    def filter_and_downsample(self, scores, batch: DataProto):
+        """
+        downsample the batch according to oversample_factor
+        samples passing the filters will be prioritized
+        """
+        n_samples = int(self.config.actor_rollout_ref.rollout.n)
+        reward_matrix = torch.tensor(scores).reshape(-1, n_samples)
+
+        filter_mask = torch.ones((reward_matrix.shape[0]), dtype=torch.bool)
+
+        if self.config.data.filter_accuracy:
+            acc_tensor = torch.mean(reward_matrix, dim=-1)
+            filter_mask[(acc_tensor > self.config.data.accuracy_upper_bound) |
+                        (acc_tensor < self.config.data.accuracy_lower_bound)] = False
+
+        if self.config.data.filter_truncate:
+            length_matrix = batch.batch['attention_mask'][:, -batch.batch['responses'].shape[-1]:].sum(dim=-1).reshape(
+                -1, n_samples)
+            length_tensor = torch.max(length_matrix, dim=-1)[0]
+            filter_mask[length_tensor >= self.config.data.max_response_length - 1] = False
+
+        reorder_index = torch.argsort(filter_mask, descending=True)
+
+        # if self.config.data.resample and filter_mask.any():
+        #     positive_sample_num = int(filter_mask.sum().item())
+        #     while positive_sample_num < (len(batch) // self.config.data.oversample_factor // n_samples):
+        #         reorder_index[positive_sample_num:positive_sample_num * 2] = reorder_index[:positive_sample_num]
+        #         positive_sample_num *= 2
+
+        reorder_index = (reorder_index.unsqueeze(-1) * n_samples + torch.arange(0, n_samples).unsqueeze(0)).view(-1)
+
+        batch.reorder(reorder_index[:int(len(batch) //
+                                         self.config.data.oversample_factor)])  # this operation is inplace
+
+        if self.config.data.resample:  # 功能有所修改，现在含义是发现采样数量不足时，需要自动增加oversample_factor到满足要求为止。
+            # 乘性减：当实际需要的oversample数为当前数目的一般以下时才允许减小
+            required_oversample_factor = filter_mask.shape[0] // (filter_mask.sum().item() + 1) + 1
+            self.config.data.oversample_factor = max(self.config.data.oversample_factor, required_oversample_factor)
+            if self.config.data.oversample_factor > 2 * required_oversample_factor:
+                self.config.data.oversample_factor = required_oversample_factor
+        return batch
