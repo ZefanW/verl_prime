@@ -16,7 +16,7 @@ set -x
 # 需要在文件外设置几个全局变量
 
 PROJECT_NAME='data-abla-n4'
-EXPERIMENT_NAME='dapo-eurus-cont'
+EXPERIMENT_NAME='dapo-synthetic-cont'
 SFT_MODEL_PATH=/home/wangzefan/huggingface/Qwen2.5-Math-7B
 CKPT=/home/wangzefan/data/verl_prime/checkpoints/data-abla-n4/dapo/global_step_64
 
@@ -32,7 +32,7 @@ export WANDB_DIR=$WANDB_DIR/wandb_exp/$PROJECT_NAME
 mkdir -p $WANDB_DIR/wandb
 
 python3 -m recipe.prime.main_prime \
-    data.train_files="$DAPO_EURUS" \
+    data.train_files="$DAPO_SYNTHETIC" \
     data.val_files="$AMC" \
     data.train_batch_size=64 \
     data.val_batch_size=6312 \

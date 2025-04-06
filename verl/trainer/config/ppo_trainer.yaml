@@ -25,6 +25,7 @@ actor_rollout_ref:
   hybrid_engine: True
   model:
     path: ~/models/deepseek-llm-7b-chat
+    ref_path: ${actor_rollout_ref.model.path}
     external_lib: null
     override_config: { }
     enable_gradient_checkpointing: True
@@ -38,6 +39,7 @@ actor_rollout_ref:
     ppo_max_token_len_per_gpu: 16384 # n * ${data.max_prompt_length} + ${data.max_response_length}
     grad_clip: 1.0
     clip_ratio: 0.2
+    clip_high: null
     entropy_coeff: 0.001
     use_kl_loss: True # True for GRPO
     kl_loss_coef: 0.000 # for grpo
@@ -99,6 +101,8 @@ actor_rollout_ref:
     do_sample: True
     # number of responses (i.e. num sample times)
     n: 1 # > 1 for grpo
+    repetition_penalty: 1.0
+    max_seq_len_to_capture: null
 
 critic:
   strategy: fsdp
@@ -136,6 +140,7 @@ critic:
   shuffle: ${actor_rollout_ref.actor.shuffle}
   grad_clip: 1.0
   cliprange_value: 0.5
+  critic_loss: td # ce
 
 reward_model:
   enable: False
@@ -165,6 +170,7 @@ custom_reward_function:
 algorithm:
   gamma: 1.0
   lam: 1.0
+  lam_critic: ${algorithm.lam}
   adv_estimator: gae
   kl_penalty: kl  # how to estimate kl divergence
   kl_ctrl:

@@ -1,29 +1,24 @@
-# 1.5B qwen math在eurus-math上训练，在MATH上评测（直接Top1)。训练尽量轻量，能看出基本的性能差别就行。还是要做数据筛选，这个步骤依然是必须的。
+# PRIME当成value model来用，最终更新公式用MC return。需要一个特殊的adv estimator来完成这件事
+# 比较reward model性质需要用最科学的算法，需要decouple DPO loss，reverse mode
 set -x
 
-if [[ -v DECOUPLE ]]; then
-  LAMC=1.0
+if [[ -v POLICY ]]; then
+  REF_TYPE='policy+freeze'
 else
-  LAMC=$LAM
+  REF_TYPE=freeze
 fi
 
-if [[ -v CE ]]; then
-  LOSS_TYPE=ce
-else
-  LOSS_TYPE=td
-fi
-
-echo "running exp on ppo lam ${LAMC} ${LAM} with ${LOSS_TYPE} loss"
+echo "running exp on prime lam ${LAM}"
 
 PROJECT_NAME='prime-lambda-exp'
-EXPERIMENT_NAME="ppo-${LAMC}-${LAM}-${LOSS_TYPE}"
+EXPERIMENT_NAME="prime-${LAM}-strict-dpo-tll-${REF_TYPE}"
 SFT_MODEL_PATH=/home/wangzefan/huggingface/Qwen2.5-Math-1.5B
 export WANDB_DIR=$WANDB_DIR/wandb_exp/$PROJECT_NAME
 mkdir -p $WANDB_DIR/wandb
 #    data.train_files="/home/wangzefan/dataset/dataset/prime/train.parquet" \
 #    data.val_files="/home/wangzefan/dataset/dataset/prime/validation.parquet" \
 
-python3 -m verl.trainer.main_ppo \
+python3 -m recipe.prime.main_prime \
     data.train_files="/home/wangzefan/dataset/dataset/prime-rl-math-wo-prompt/math7500.parquet" \
     data.val_files="/home/wangzefan/dataset/dataset/prime-rl-math-wo-prompt/math500.parquet" \
     data.train_batch_size=64 \
@@ -53,12 +48,27 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=16 \
     actor_rollout_ref.actor.ulysses_sequence_parallel_size=$PARALLEL_SIZE \
     actor_rollout_ref.actor.entropy_coeff=0.000 \
-    algorithm.adv_estimator=gae \
+    actor_rollout_ref.actor.use_token_level_loss=True \
+    algorithm.adv_estimator=prime \
     algorithm.kl_ctrl.kl_coef=0. \
-    algorithm.lam_critic=$LAMC \
     algorithm.lam=$LAM \
-    reward_model.enable=False \
+    reward_model.enable=True \
     reward_model.reward_manager=prime \
+    algorithm.reward_gt_coef=5 \
+    algorithm.reward_dpo_coef=5 \
+    reward_model.model.path=$SFT_MODEL_PATH \
+    reward_model.micro_batch_size_per_gpu=1 \
+    reward_model.model.update=after \
+    reward_model.model.beta_train=0.05 \
+    reward_model.model.optim.lr=1e-6 \
+    reward_model.model.optim.grad_clip=10.0 \
+    reward_model.model.input_tokenizer=null \
+    reward_model.mini_batch_size=256 \
+    reward_model.ulysses_sequence_parallel_size=$PARALLEL_SIZE \
+    reward_model.prime_norm=none \
+    reward_model.model.loss_type=dpo \
+    reward_model.model.update=reverse \
+    reward_model.model.ref_type=$REF_TYPE \
     critic.optim.lr=1e-6 \
     critic.model.path=$SFT_MODEL_PATH \
     critic.model.enable_gradient_checkpointing=False \
@@ -66,7 +76,6 @@ python3 -m verl.trainer.main_ppo \
     critic.model.fsdp_config.optimizer_offload=True \
     critic.model.use_remove_padding=True \
     critic.ppo_micro_batch_size_per_gpu=2 \
-    critic.critic_loss=$LOSS_TYPE \
     trainer.logger=['console','wandb'] \
     trainer.project_name=$PROJECT_NAME \
     trainer.experiment_name=$EXPERIMENT_NAME \

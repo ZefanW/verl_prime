@@ -16,6 +16,53 @@ import torch
 import verl
 import verl.utils.torch_functional as verl_F
 
+def compute_prime_advantage_return(data: verl.DataProto, eos_mask: torch.Tensor, n_samples, config):
+    # 把PRIME的输出当做value model来用，这会有一个partition项需要估计，这里简单处理就直接平均作差完事。
+    # 然后再来GAE。可以确保这样做和PRIME等同。
+
+    prompt_ids = data.batch['prompts']
+    prompt_length = prompt_ids.shape[-1]
+    valid_response_length = data.batch['attention_mask'][:, prompt_length:].sum(-1)
+    gamma=1
+    lam=config.algorithm.lam
+
+    with torch.no_grad():
+        assert 'rm_scores' in data.batch.keys() and 'acc' in data.batch.keys()
+        q_tensor = data.batch['rm_scores']
+        q_tensor[eos_mask==0]=0
+        V_last = q_tensor.sum(dim=-1)
+        Q_tensor = q_tensor.cumsum(dim=-1)
+        Q_tensor[:,1:]=q_tensor[:,:-1]
+        Q_tensor[:,0]=0
+        for start_pos in range(0,q_tensor.shape[0], n_samples):
+            partition = (data.batch['acc'][start_pos:start_pos+n_samples] - V_last[start_pos:start_pos+n_samples]).mean()
+            Q_tensor[start_pos:start_pos+n_samples] += partition
+        Q_tensor[eos_mask==0]=0
+        # V(t) = Q(t-1)，V_0应该总是partition，相当于V_value需要把Q整体后移一位才对
+        # 注意Q_tensor的含义是V，不要搞混
+
+        # reward tensor在这里需要被保留
+        token_level_rewards=torch.zeros_like(q_tensor)
+        token_level_rewards[
+            torch.arange(0, valid_response_length.shape[0], dtype=torch.long, device=valid_response_length.device),
+            valid_response_length - 1] = data.batch['acc']
+
+        lastgaelam = 0
+        advantages_reversed = []
+        gen_len = q_tensor.shape[1]
+
+        for t in reversed(range(gen_len)):
+            nextvalues = Q_tensor[:, t + 1] if t < gen_len - 1 else 0.0
+            delta = token_level_rewards[:, t] + gamma * nextvalues - Q_tensor[:, t]
+            lastgaelam = delta + gamma * lam * lastgaelam
+            advantages_reversed.append(lastgaelam)
+        advantages = torch.stack(advantages_reversed[::-1], dim=1)
+
+        returns = advantages + Q_tensor
+        advantages = verl_F.masked_whiten(advantages, eos_mask)
+
+    return advantages, returns
+
 
 def compute_rloo_advantage_return(data: verl.DataProto, eos_mask: torch.Tensor, n_samples, config):
     # calculate rloo reward on different reward sources, and sum again

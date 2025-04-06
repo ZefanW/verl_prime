@@ -174,8 +174,18 @@ class vLLMRollout(BaseRollout):
         for i in range(batch_size):
             idx_list.append(_pre_process_inputs(self.pad_token_id, idx[i]))
 
+        is_validating = prompts.meta_info.get('validate', False)
         do_sample = prompts.meta_info.get('do_sample', True)
-        if not do_sample:
+        if is_validating and do_sample:
+            kwargs = {
+                'best_of': 1,
+                'top_p': 0.95,
+                'top_k': -1,
+                'min_p': 0.0,
+                'temperature': 1.0,
+                'n': 1
+            }
+        elif not do_sample:
             kwargs = {
                 'best_of': 1,
                 'top_p': 1.0,
@@ -202,7 +212,7 @@ class vLLMRollout(BaseRollout):
             response = pad_sequence_to_length(response, self.config.response_length, self.pad_token_id)
             log_probs = pad_sequence_to_length(log_probs, self.config.response_length, self.pad_token_id)
 
-        if self.config.n > 1 and do_sample:
+        if self.config.n > 1 and do_sample and not is_validating:
             idx = idx.repeat_interleave(self.config.n, dim=0)
             attention_mask = attention_mask.repeat_interleave(self.config.n, dim=0)
             position_ids = position_ids.repeat_interleave(self.config.n, dim=0)

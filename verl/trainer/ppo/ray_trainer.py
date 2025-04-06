@@ -161,7 +161,7 @@ def apply_kl_penalty(data: DataProto, kl_ctrl: core_algos.AdaptiveKLController, 
     return data, metrics
 
 
-def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_repeat=1):
+def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_repeat=1, config=None):
     # prepare response group
     # TODO: add other ways to estimate advantages
     if adv_estimator == AdvantageEstimator.GAE:
@@ -177,6 +177,13 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
                                                                       gamma=gamma,
                                                                       lam=lam)
         data.batch['advantages'] = advantages
+        # 如果有decouple，那么returns需要重新计算。returns只会被用来更新value model
+        if config.algorithm.lam_critic!=config.algorithm.lam:
+            advantages, returns = core_algos.compute_gae_advantage_return(token_level_rewards=token_level_rewards,
+                                                                      values=values,
+                                                                      eos_mask=response_mask,
+                                                                      gamma=gamma,
+                                                                      lam=config.algorithm.lam_critic)
         data.batch['returns'] = returns
     elif adv_estimator == AdvantageEstimator.GRPO:
         token_level_rewards = data.batch['token_level_rewards']
@@ -447,7 +454,8 @@ class RayPPOTrainer(object):
         ]:
             self.use_critic = False
         else:
-            raise NotImplementedError
+            # raise NotImplementedError
+            self.use_critic=False
 
         self._validate_config()
         self._create_dataloader()
@@ -1031,7 +1039,7 @@ class RayPPOTrainer(object):
                                                   adv_estimator=self.config.algorithm.adv_estimator,
                                                   gamma=self.config.algorithm.gamma,
                                                   lam=self.config.algorithm.lam,
-                                                  num_repeat=self.config.actor_rollout_ref.rollout.n)
+                                                  num_repeat=self.config.actor_rollout_ref.rollout.n, config=self.config)
 
                     # update critic
                     if self.use_critic:
@@ -1065,6 +1073,7 @@ class RayPPOTrainer(object):
                 # collect metrics
                 metrics.update(compute_data_metrics(batch=batch, use_critic=self.use_critic))
                 metrics.update(compute_timing_metrics(batch=batch, timing_raw=timing_raw))
+                # metrics.update(self.compute_value_metrics(batch=batch)) # 评价value model的好坏。主要看td0(平滑度), td1(对return的误差)，exp_var(解释力)
 
                 config = self.config
                 n_gpus = config.trainer.n_gpus_per_node * config.trainer.nnodes

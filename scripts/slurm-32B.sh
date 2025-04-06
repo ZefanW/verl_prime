@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --partition=code
-#SBATCH --nodes=4
+#SBATCH --nodes=8
 #SBATCH --tasks-per-node=1
 #SBATCH --cpus-per-task=128
 #SBATCH --gres=gpu:8
@@ -21,14 +21,25 @@ echo "Head node internal IP: ${HEAD_IP}"
 export HEAD_NODE
 export HEAD_IP
 
-srun -n4 -N4 bash -c '
+srun -n8 -N8 bash -c '
 source /home/wangzefan/anaconda3/etc/profile.d/conda.sh
 conda activate verl
 
 cd /home/wangzefan/data/verl_prime
 source examples/0302/wzf_qy_env.sh
 
-export GLOO_SOCKET_IFNAME=ens22f0
+# 先提取第二张网卡名称
+export NIC=$(ip addr | awk -F'\'': '\'' '\''/^[0-9]+:/{print $2}'\'' | sed -n '\''2p'\'')
+# 检查该网卡是否处于 DOWN 状态
+if ip addr show "$NIC" | grep -q "state DOWN"; then
+    # 如果是 DOWN，则获取第三张网卡名称
+    export NIC=$(ip addr | awk -F'\'': '\'' '\''/^[0-9]+:/{print $2}'\'' | sed -n '\''3p'\'')
+fi
+
+# 提取IB号
+export NCCL_IB_HCA=$(ibstatus | grep "Infiniband device" | awk -F"'\''" '\''{print $2}'\'' | paste -sd, -)
+
+export GLOO_SOCKET_IFNAME=$NIC
 
 # 启动 Ray 集群，在首结点启动 head，其它节点作为 worker 连接
 

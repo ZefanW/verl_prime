@@ -110,6 +110,11 @@ class DataParallelPPOCritic(BasePPOCritic):
                                             use_cache=False)  # prevent model thinks we are generating
                 values = output.logits
                 values = values[:, -response_length - 1:-1].squeeze(-1)
+
+            # 如果loss是CE，那么这里需要sigmoid
+            if self.config.critic_loss == 'ce':
+                values = torch.sigmoid(values)
+
             return values
 
     def _optimizer_step(self):
@@ -168,7 +173,7 @@ class DataParallelPPOCritic(BasePPOCritic):
         self.critic_module.train()
         metrics = {}
 
-        select_keys = ['input_ids', 'responses', 'attention_mask', 'position_ids', 'values', 'returns']
+        select_keys = ['input_ids', 'responses', 'attention_mask', 'position_ids', 'values', 'returns', 'acc']
         batch = data.select(batch_keys=select_keys).batch
         has_multi_modal_inputs = 'multi_modal_inputs' in data.non_tensor_batch.keys()
 
@@ -213,15 +218,21 @@ class DataParallelPPOCritic(BasePPOCritic):
 
                     eos_mask = attention_mask[:, -response_length - 1:-1]
 
-                    vpreds = self._forward_micro_batch(data)
+                    vpreds = self._forward_micro_batch(data) # 和DPO model是有区别的，value model的poss0其实是-1，q model才是0
 
                     # assert not torch.any(torch.isnan(vpreds)).item()
-
-                    vf_loss, vf_clipfrac = core_algos.compute_value_loss(vpreds=vpreds,
-                                                                         values=values,
-                                                                         returns=returns,
-                                                                         eos_mask=eos_mask,
-                                                                         cliprange_value=self.config.cliprange_value)
+                    if self.config.critic_loss == 'td':
+                        vf_loss, vf_clipfrac = core_algos.compute_value_loss(vpreds=vpreds,
+                                                                             values=values,
+                                                                             returns=returns,
+                                                                             eos_mask=eos_mask,
+                                                                             cliprange_value=self.config.cliprange_value)
+                    elif self.config.critic_loss == 'ce':
+                        acc = data['acc'].unsqueeze(1).expand(vpreds.size(0), vpreds.size(1)).to(vpreds.dtype)
+                        vf_loss = torch.nn.functional.binary_cross_entropy(vpreds[eos_mask==1], acc[eos_mask==1])
+                        vf_clipfrac = torch.zeros_like(vf_loss)
+                    else:
+                        raise NotImplementedError
                     if self.config.use_dynamic_bsz:
                         # relative to the dynamic bsz
                         loss = vf_loss * (len(data) / self.config.ppo_mini_batch_size)

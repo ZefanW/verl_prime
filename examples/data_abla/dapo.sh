@@ -51,6 +51,7 @@ python3 -m recipe.prime.main_prime \
     actor_rollout_ref.rollout.name=vllm \
     actor_rollout_ref.rollout.n=4 \
     actor_rollout_ref.rollout.gpu_memory_utilization=0.6 \
+    actor_rollout_ref.rollout.max_seq_len_to_capture=4096 \
     actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=32 \
     actor_rollout_ref.actor.ulysses_sequence_parallel_size=$PARALLEL_SIZE \
     algorithm.adv_estimator=rloo \
@@ -73,6 +74,7 @@ python3 -m recipe.prime.main_prime \
     trainer.nnodes=1 \
     trainer.save_freq=32 \
     trainer.test_freq=16 \
-    trainer.total_epochs=10 \
-    trainer.default_local_dir="$CKPT_PATH"/"$PROJECT_NAME"/"$EXPERIMENT_NAME"
+    trainer.total_epochs=50 \
+    trainer.default_local_dir="$CKPT_PATH"/"$PROJECT_NAME"/"$EXPERIMENT_NAME" \
+    trainer.validate_sample=True
 
