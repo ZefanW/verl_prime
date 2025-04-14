@@ -11,7 +11,7 @@ fi
 echo "running exp on prime lam ${LAM}"
 
 PROJECT_NAME='prime-lambda-exp'
-EXPERIMENT_NAME="prime-${LAM}-strict-dpo-tll-${REF_TYPE}"
+EXPERIMENT_NAME="prime-${LAM}-strict-dpo-tll-${REF_TYPE}-noavgpar"
 SFT_MODEL_PATH=/home/wangzefan/huggingface/Qwen2.5-Math-1.5B
 export WANDB_DIR=$WANDB_DIR/wandb_exp/$PROJECT_NAME
 mkdir -p $WANDB_DIR/wandb

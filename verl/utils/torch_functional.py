@@ -23,12 +23,13 @@ import torch.nn.functional as F
 from tensordict import TensorDict
 from torch import nn
 
-try:
-    from flash_attn.ops.triton.cross_entropy import cross_entropy_loss
-    FLAH_ATTN_CROSS_ENTROPY_LOSS_AVAILABLE = True
-except ImportError:
-    FLAH_ATTN_CROSS_ENTROPY_LOSS_AVAILABLE = False
+# try:
+#     from flash_attn.ops.triton.cross_entropy import cross_entropy_loss
+#     FLAH_ATTN_CROSS_ENTROPY_LOSS_AVAILABLE = True
+# except ImportError:
+#     FLAH_ATTN_CROSS_ENTROPY_LOSS_AVAILABLE = False
 
+FLAH_ATTN_CROSS_ENTROPY_LOSS_AVAILABLE = False
 
 def gather_from_labels(data, label):
     """Gather the label from data. The value in label should be [0, vocab_size)

@@ -74,7 +74,7 @@ python3 -m recipe.prime.main_prime \
     trainer.nnodes=1 \
     trainer.save_freq=32 \
     trainer.test_freq=16 \
-    trainer.total_epochs=50 \
+    trainer.total_epochs=100 \
     trainer.default_local_dir="$CKPT_PATH"/"$PROJECT_NAME"/"$EXPERIMENT_NAME" \
     trainer.validate_sample=True
 

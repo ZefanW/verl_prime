@@ -35,11 +35,26 @@ def compute_prime_advantage_return(data: verl.DataProto, eos_mask: torch.Tensor,
         Q_tensor[:,1:]=q_tensor[:,:-1]
         Q_tensor[:,0]=0
         for start_pos in range(0,q_tensor.shape[0], n_samples):
-            partition = (data.batch['acc'][start_pos:start_pos+n_samples] - V_last[start_pos:start_pos+n_samples]).mean()
-            Q_tensor[start_pos:start_pos+n_samples] += partition
+            # highlight: partition暂时被修改，partition总是直接等于acc-value_last，加上这个以后可以让prime在训崩以后还能重新把acc拉起来
+            partition = (data.batch['acc'][start_pos:start_pos+n_samples] - V_last[start_pos:start_pos+n_samples])
+            Q_tensor[start_pos:start_pos+n_samples] += partition.unsqueeze(-1)
         Q_tensor[eos_mask==0]=0
         # V(t) = Q(t-1)，V_0应该总是partition，相当于V_value需要把Q整体后移一位才对
         # 注意Q_tensor的含义是V，不要搞混
+
+        # value clipping: 由于这里的Q优化比较unbound，需要强制锁定clip到0-1范围内，避免各种不稳定
+        # Q_tensor = torch.clamp(Q_tensor, min=0, max=1)
+
+        # value normalizing: 不允许出现不合理的value，所以每个回答的value需要被norm到0和1之间
+        # Q_max = Q_tensor.max(dim=-1)[0].unsqueeze(-1)
+        # Q_max[Q_max<1]=1
+        # Q_tensor /= Q_max
+        # Q_tensor[eos_mask == 0] = 0
+        #
+        # Q_min = Q_tensor.min(dim=-1)[0].unsqueeze(-1)
+        # Q_min[Q_min>0]=0
+        # Q_tensor = 1-(1-Q_tensor)/(1-Q_min)
+        # Q_tensor[eos_mask == 0] = 0
 
         # reward tensor在这里需要被保留
         token_level_rewards=torch.zeros_like(q_tensor)
@@ -60,6 +75,7 @@ def compute_prime_advantage_return(data: verl.DataProto, eos_mask: torch.Tensor,
 
         returns = advantages + Q_tensor
         advantages = verl_F.masked_whiten(advantages, eos_mask)
+
 
     return advantages, returns
 

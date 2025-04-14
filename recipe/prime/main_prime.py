@@ -28,6 +28,8 @@
 """
 Note that we don't combine the main with ray_trainer as ray_trainer is used by other main.
 """
+import os
+
 from .prime_ray_trainer import RayPRIMETrainer
 
 import ray
@@ -45,15 +47,18 @@ def run_prime(config, compute_score=None):
         ray.init(
             runtime_env={'env_vars': {
                 'TOKENIZERS_PARALLELISM': 'true',
-                'NCCL_DEBUG': 'WARN'
+                'NCCL_DEBUG': 'WARN',
+                # 'OMP_NUM_THREADS': '128'
             }},
         )
 
     ray.get(main_task.remote(config, compute_score))
 
 
-@ray.remote(num_cpus=1)  # please make sure main_task is not scheduled on head
+@ray.remote(num_cpus=1)  # please make sure main_task is not scheduled on head # TODO: 试试留出一个节点专门用来调度，即整个程序应该有9台机器，其中head机器不承担计算任务
 def main_task(config, compute_score=None):
+    # os.environ['OMP_NUM_THREADS'] = '16'
+
     from verl.utils.fs import copy_local_path_from_hdfs
     # print initial config
     from pprint import pprint

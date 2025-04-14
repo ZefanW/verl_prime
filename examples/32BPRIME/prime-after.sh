@@ -3,7 +3,7 @@
 
 
 PROJECT_NAME='PRIMER'
-EXPERIMENT_NAME='baseline-dapo-320-cont2'
+EXPERIMENT_NAME='baseline-dapo-608cont'
 SFT_MODEL_PATH=/home/wangzefan/huggingface/Qwen2.5-32B
 DAPO=/home/wangzefan/dataset/dataset/prime-rl-math-wo-prompt/dapo.parquet
 AIME=/home/wangzefan/dataset/dataset/prime-rl-math-wo-prompt/aime2024_32.parquet
@@ -29,12 +29,12 @@ python3 -m recipe.prime.main_prime \
     data.accuracy_lower_bound=0.05 \
     data.accuracy_upper_bound=0.95 \
     data.oversample_factor=1 \
-    actor_rollout_ref.model.path=/home/wangzefan/data/verl_prime/checkpoints/PRIMER/baseline-dapo/global_step_320/actor/huggingface \
+    actor_rollout_ref.model.path=/home/wangzefan/data/verl_prime/checkpoints/PRIMER/baseline-dapo/global_step_608/actor/huggingface \
     actor_rollout_ref.model.ref_path=$SFT_MODEL_PATH \
     actor_rollout_ref.actor.optim.lr=5e-7 \
     actor_rollout_ref.model.use_remove_padding=True \
     actor_rollout_ref.actor.ppo_mini_batch_size=128 \
-    actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=1 \
+    actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=2 \
     actor_rollout_ref.model.enable_gradient_checkpointing=True \
     actor_rollout_ref.actor.fsdp_config.param_offload=True \
     actor_rollout_ref.actor.fsdp_config.optimizer_offload=True \
@@ -52,10 +52,10 @@ python3 -m recipe.prime.main_prime \
     algorithm.adv_estimator=rloo \
     algorithm.reward_gt_coef=5 \
     algorithm.reward_dpo_coef=5 \
-    reward_model.model.path=/home/wangzefan/data/verl_prime/checkpoints/PRIMER/baseline-dapo/global_step_320/reward/huggingface \
+    reward_model.model.path=/home/wangzefan/data/verl_prime/checkpoints/PRIMER/baseline-dapo/global_step_608/reward/huggingface \
     reward_model.model.ref_path=$SFT_MODEL_PATH \
-    reward_model.micro_batch_size_per_gpu=1 \
-    reward_model.model.update=before \
+    reward_model.micro_batch_size_per_gpu=2 \
+    reward_model.model.update=after \
     reward_model.model.beta_train=0.05 \
     reward_model.model.optim.lr=1e-6 \
     reward_model.model.optim.grad_clip=10.0 \
@@ -67,7 +67,7 @@ python3 -m recipe.prime.main_prime \
     trainer.experiment_name=$EXPERIMENT_NAME \
     trainer.n_gpus_per_node=8 \
     trainer.nnodes=8 \
-    trainer.save_freq=32 \
+    trainer.save_freq=16 \
     trainer.test_freq=16 \
     trainer.total_epochs=10 \
     trainer.val_generations_to_log_to_wandb=64 \

@@ -2,7 +2,7 @@
 #SBATCH --partition=code
 #SBATCH --nodes=8
 #SBATCH --tasks-per-node=1
-#SBATCH --cpus-per-task=128
+#SBATCH --cpus-per-task=112
 #SBATCH --gres=gpu:8
 #SBATCH --mem=900G
 # 用srun启动，带--pty参数
@@ -40,6 +40,12 @@ fi
 export NCCL_IB_HCA=$(ibstatus | grep "Infiniband device" | awk -F"'\''" '\''{print $2}'\'' | paste -sd, -)
 
 export GLOO_SOCKET_IFNAME=$NIC
+export UCX_NET_DEVICES=$NIC
+export NCCL_SOCKET_IFNAME=$NIC
+
+# 设置通信并发，似乎小的数值对all reduce更友好
+
+export CUDA_DEVICE_MAX_CONNECTIONS=32
 
 # 启动 Ray 集群，在首结点启动 head，其它节点作为 worker 连接
 
@@ -59,15 +65,15 @@ fi
 # 等待 10 秒钟，确保 Ray 集群启动完成
 sleep 15
 
-
+# 注意mask task node不要和head node重合
 
 while true; do
-    if [ "$SLURM_NODEID" -eq 0 ]; then
+    if [ "$SLURM_NODEID" -eq 1 ]; then
       echo "Starting main Ray script on head node..."
       export WANDB_DIR=/home/wangzefan/data/verl_prime/
       bash examples/32BPRIME/prime-after.sh
       ret_code=$?
-      if [ $ret_code -ne 0 ]; then
+      if [ $ret_code -ne 1 ]; then
         echo "Main script exited with code ${ret_code}. Restarting after 10 seconds..."
         sleep 10
       else
