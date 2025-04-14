@@ -40,6 +40,7 @@ from verl.trainer.ppo.core_algos import compute_reinforce_plus_plus_outcome_adva
 
 
 def compute_advantage(data: DataProto, adv_estimator, config):
+    metrics={}
     if adv_estimator == 'rloo':
         responses = data.batch['responses']
         response_length = responses.size(-1)
@@ -74,10 +75,11 @@ def compute_advantage(data: DataProto, adv_estimator, config):
         response_length = responses.size(-1)
         attention_mask = data.batch['attention_mask']
         response_mask = attention_mask[:, -response_length:]
-        advantages, returns = prime_core_algos.compute_prime_advantage_return(data, response_mask,
+        advantages, returns, metrics = prime_core_algos.compute_prime_advantage_return(data, response_mask,
                                                                              config.actor_rollout_ref.rollout.n, config)
         data.batch['advantages'] = advantages
         data.batch['returns'] = returns
+        data.meta_info['adv_metrics'] = metrics
     else:
         raise NotImplementedError
     return data
@@ -346,10 +348,13 @@ class RayPRIMETrainer(RayPPOTrainer):
 
         # load dataloader,
         # TODO: from remote not implemented yet
-        dataloader_local_path = os.path.join(global_step_folder, 'data.pt')
-        self.train_dataloader = torch.load(dataloader_local_path)
-        if isinstance(self.train_dataloader.dataset, RLHFDataset):
-            self.train_dataloader.dataset.resume_dataset_state()
+
+        # highlight: 由于一些我修复不了的bug，dataloader state不再会加载了
+
+        # dataloader_local_path = os.path.join(global_step_folder, 'data.pt')
+        # self.train_dataloader = torch.load(dataloader_local_path)
+        # if isinstance(self.train_dataloader.dataset, RLHFDataset):
+        #     self.train_dataloader.dataset.resume_dataset_state()
 
     def fit(self):
         """
@@ -508,6 +513,8 @@ class RayPRIMETrainer(RayPPOTrainer):
                         batch = compute_advantage(batch,
                                                   adv_estimator=self.config.algorithm.adv_estimator,
                                                   config=self.config)
+                        if 'adv_metrics'in batch.meta_info:
+                            metrics.update(batch.meta_info['adv_metrics'])
 
                         # compute return accuracy here to see if the reward model is working fine
                         metrics.update({

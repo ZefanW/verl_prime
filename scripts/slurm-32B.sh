@@ -53,12 +53,19 @@ echo "Running on $(hostname), SLURM_NODEID=$SLURM_NODEID"
 ray stop --force
 if [ "$SLURM_NODEID" -eq 0 ]; then
   echo "Starting Ray head on $(hostname)"
-  ray start --head --port=6379 --node-ip-address=$HEAD_IP
+  ray start --head --port=6379 --node-ip-address=$HEAD_IP --resources='\''{"worker": 0}'\'' --system-config='\''{
+  "worker_register_timeout_seconds": 60,
+  "object_timeout_milliseconds": 600000,
+  "gcs_redis_heartbeat_interval_milliseconds": 10000,
+  "core_worker_internal_heartbeat_ms": 10000
+}'\''
+#--num-cpus=32
 
 else
   echo "Starting Ray worker on $(hostname), connecting to $HEAD_NODE"
   echo $HEAD_IP:6379
-  ray start --address=$HEAD_IP:6379
+  ray start --address=$HEAD_IP:6379 --resources='\''{"worker": 1}'\''
+  # --num-cpus=32
 fi
 
 
@@ -73,7 +80,7 @@ while true; do
       export WANDB_DIR=/home/wangzefan/data/verl_prime/
       bash examples/32BPRIME/prime-after.sh
       ret_code=$?
-      if [ $ret_code -ne 1 ]; then
+      if [ $ret_code -ne 0 ]; then
         echo "Main script exited with code ${ret_code}. Restarting after 10 seconds..."
         sleep 10
       else

@@ -171,7 +171,7 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
         attention_mask = data.batch['attention_mask']
         response_mask = attention_mask[:, -response_length:]
         token_level_rewards = data.batch['token_level_rewards']
-        advantages, returns = core_algos.compute_gae_advantage_return(token_level_rewards=token_level_rewards,
+        advantages, returns, metrics = core_algos.compute_gae_advantage_return(token_level_rewards=token_level_rewards,
                                                                       values=values,
                                                                       eos_mask=response_mask,
                                                                       gamma=gamma,
@@ -179,12 +179,13 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
         data.batch['advantages'] = advantages
         # 如果有decouple，那么returns需要重新计算。returns只会被用来更新value model
         if config.algorithm.lam_critic!=config.algorithm.lam:
-            advantages, returns = core_algos.compute_gae_advantage_return(token_level_rewards=token_level_rewards,
+            advantages, returns, metrics= core_algos.compute_gae_advantage_return(token_level_rewards=token_level_rewards,
                                                                       values=values,
                                                                       eos_mask=response_mask,
                                                                       gamma=gamma,
                                                                       lam=config.algorithm.lam_critic)
         data.batch['returns'] = returns
+        data.meta_info['adv_metrics'] = metrics
     elif adv_estimator == AdvantageEstimator.GRPO:
         token_level_rewards = data.batch['token_level_rewards']
         index = data.non_tensor_batch['uid']
@@ -1040,6 +1041,8 @@ class RayPPOTrainer(object):
                                                   gamma=self.config.algorithm.gamma,
                                                   lam=self.config.algorithm.lam,
                                                   num_repeat=self.config.actor_rollout_ref.rollout.n, config=self.config)
+                        if 'adv_metrics'in batch.meta_info:
+                            metrics.update(batch.meta_info['adv_metrics'])
 
                     # update critic
                     if self.use_critic:

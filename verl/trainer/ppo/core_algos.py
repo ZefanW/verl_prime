@@ -104,7 +104,10 @@ def compute_gae_advantage_return(token_level_rewards: torch.Tensor, values: torc
 
         returns = advantages + values
         advantages = verl_F.masked_whiten(advantages, eos_mask)
-    return advantages, returns
+
+        metrics=compute_value_model_metrics(values, eos_mask, token_level_rewards.sum(dim=-1))
+
+    return advantages, returns, metrics
 
 
 # NOTE(sgm): this implementation only consider outcome supervision, where the reward is a scalar.
@@ -381,3 +384,30 @@ def kl_penalty(logprob: torch.FloatTensor, ref_logprob: torch.FloatTensor, kl_pe
         raise NotImplementedError
 
     raise NotImplementedError
+
+
+def compute_value_model_metrics(value_tensor, eos_mask, outcome_reward):
+    metrics={}
+    last_pos=eos_mask.sum(dim=-1)-1
+    # td0 loss
+    value_next=value_tensor.roll(shifts=-1,dims=-1)
+    value_next[:,-1]=0.
+    for i in range(value_next.shape[0]):
+        value_next[i,last_pos[i]]=outcome_reward[i]
+
+    metrics['td0'] = verl_F.masked_mean((value_next-value_tensor)**2, eos_mask).item()
+
+    # td1 loss
+    metrics['td1'] = verl_F.masked_mean((outcome_reward.unsqueeze(-1)-value_tensor)**2, eos_mask).item()
+
+    # exp var
+    return_tensor = eos_mask * outcome_reward.unsqueeze(-1)
+    metrics['exp_var'] = 1.0 - verl_F.masked_var(return_tensor-value_tensor, eos_mask).item() / verl_F.masked_var(return_tensor, eos_mask).item()
+
+    # unexp var
+    # lstsq=torch.lstsq(value_tensor[eos_mask==1], return_tensor[eos_mask==1])
+    # residusl=
+
+    # reverse unexp var
+
+    return metrics

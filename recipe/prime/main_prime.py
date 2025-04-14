@@ -49,13 +49,18 @@ def run_prime(config, compute_score=None):
                 'TOKENIZERS_PARALLELISM': 'true',
                 'NCCL_DEBUG': 'WARN',
                 # 'OMP_NUM_THREADS': '128'
-            }},
+            }},    _system_config={
+        # "worker_register_timeout_seconds": 6000,
+        # "object_timeout_milliseconds": 600000,
+        # "gcs_redis_heartbeat_interval_milliseconds": 10000, # 10s heartbeat
+        # "core_worker_internal_heartbeat_ms": 10000, # 10s heartbeat
+    }
         )
 
     ray.get(main_task.remote(config, compute_score))
 
 
-@ray.remote(num_cpus=1)  # please make sure main_task is not scheduled on head # TODO: 试试留出一个节点专门用来调度，即整个程序应该有9台机器，其中head机器不承担计算任务
+@ray.remote(num_cpus=1)  # please make sure main_task is not scheduled on head
 def main_task(config, compute_score=None):
     # os.environ['OMP_NUM_THREADS'] = '16'
 

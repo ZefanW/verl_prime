@@ -15,11 +15,11 @@
 import torch
 import verl
 import verl.utils.torch_functional as verl_F
+from verl.trainer.ppo.core_algos import compute_value_model_metrics
 
 def compute_prime_advantage_return(data: verl.DataProto, eos_mask: torch.Tensor, n_samples, config):
     # 把PRIME的输出当做value model来用，这会有一个partition项需要估计，这里简单处理就直接平均作差完事。
     # 然后再来GAE。可以确保这样做和PRIME等同。
-
     prompt_ids = data.batch['prompts']
     prompt_length = prompt_ids.shape[-1]
     valid_response_length = data.batch['attention_mask'][:, prompt_length:].sum(-1)
@@ -56,6 +56,8 @@ def compute_prime_advantage_return(data: verl.DataProto, eos_mask: torch.Tensor,
         # Q_tensor = 1-(1-Q_tensor)/(1-Q_min)
         # Q_tensor[eos_mask == 0] = 0
 
+        metrics=compute_value_model_metrics(Q_tensor, eos_mask, data.batch['acc'])
+
         # reward tensor在这里需要被保留
         token_level_rewards=torch.zeros_like(q_tensor)
         token_level_rewards[
@@ -77,7 +79,7 @@ def compute_prime_advantage_return(data: verl.DataProto, eos_mask: torch.Tensor,
         advantages = verl_F.masked_whiten(advantages, eos_mask)
 
 
-    return advantages, returns
+    return advantages, returns, metrics
 
 
 def compute_rloo_advantage_return(data: verl.DataProto, eos_mask: torch.Tensor, n_samples, config):
