@@ -8,8 +8,10 @@ export WANDB_MODE=offline
 export OUTLINES_CACHE_DIR=~/.cache/outlines/$(uuidgen)
 export NCCL_DEBUG=WARN
 export WANDB_API_KEY='194ba8b74c01d7f88fbf18db8f53206e24b2d46a'
-export VLLM_ATTENTION_BACKEND=XFORMERS
-export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+#export VLLM_ATTENTION_BACKEND=XFORMERS
+unset VLLM_ATTENTION_BACKEND
+#export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+unset PYTORCH_CUDA_ALLOC_CONF
 export TOKENIZERS_PARALLELISM=true
 export WANDB_MODE=offline
 export WANDB_DIR=/home/wangzefan/data/verl_prime/

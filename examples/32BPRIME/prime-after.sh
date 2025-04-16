@@ -7,7 +7,7 @@ EXPERIMENT_NAME='baseline-dapo-608cont'
 SFT_MODEL_PATH=/home/wangzefan/huggingface/Qwen2.5-32B
 DAPO=/home/wangzefan/dataset/dataset/prime-rl-math-wo-prompt/dapo.parquet
 AIME=/home/wangzefan/dataset/dataset/prime-rl-math-wo-prompt/aime2024_32.parquet
-
+# dynamic batch size不太重要
 PARALLEL_SIZE=1
 
 export WANDB_DIR=$WANDB_DIR/wandb_exp/$PROJECT_NAME
@@ -19,10 +19,10 @@ mkdir -p $WANDB_DIR/wandb
 python3 -m recipe.prime.main_prime \
     data.train_files="$DAPO" \
     data.val_files="$AIME" \
-    data.train_batch_size=128 \
+    data.train_batch_size=64 \
     data.val_batch_size=6312 \
     data.max_prompt_length=1024 \
-    data.max_response_length=15360 \
+    data.max_response_length=7168 \
     data.filter_accuracy=True \
     data.filter_truncate=False \
     data.resample=True \
@@ -33,8 +33,8 @@ python3 -m recipe.prime.main_prime \
     actor_rollout_ref.model.ref_path=$SFT_MODEL_PATH \
     actor_rollout_ref.actor.optim.lr=5e-7 \
     actor_rollout_ref.model.use_remove_padding=True \
-    actor_rollout_ref.actor.ppo_mini_batch_size=128 \
-    actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=2 \
+    actor_rollout_ref.actor.ppo_mini_batch_size=64 \
+    actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=1 \
     actor_rollout_ref.model.enable_gradient_checkpointing=True \
     actor_rollout_ref.actor.fsdp_config.param_offload=True \
     actor_rollout_ref.actor.fsdp_config.optimizer_offload=True \
@@ -47,20 +47,24 @@ python3 -m recipe.prime.main_prime \
     actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=32 \
     actor_rollout_ref.actor.ulysses_sequence_parallel_size=$PARALLEL_SIZE \
     actor_rollout_ref.rollout.max_num_batched_tokens=40000 \
-    actor_rollout_ref.rollout.max_seq_len_to_capture=16384 \
+    actor_rollout_ref.rollout.max_seq_len_to_capture=8192 \
     actor_rollout_ref.actor.use_token_level_loss=True \
     algorithm.adv_estimator=rloo \
+    algorithm.lam=0. \
     algorithm.reward_gt_coef=5 \
     algorithm.reward_dpo_coef=5 \
     reward_model.model.path=/home/wangzefan/data/verl_prime/checkpoints/PRIMER/baseline-dapo/global_step_608/reward/huggingface \
     reward_model.model.ref_path=$SFT_MODEL_PATH \
-    reward_model.micro_batch_size_per_gpu=2 \
+    reward_model.micro_batch_size_per_gpu=1 \
     reward_model.model.update=after \
+    reward_model.prime_norm=batch_norm \
+    reward_model.model.loss_type=ce \
+    reward_model.model.ref_type=freeze \
     reward_model.model.beta_train=0.05 \
     reward_model.model.optim.lr=1e-6 \
     reward_model.model.optim.grad_clip=10.0 \
     reward_model.model.input_tokenizer=null \
-    reward_model.mini_batch_size=128\
+    reward_model.mini_batch_size=64 \
     reward_model.ulysses_sequence_parallel_size=$PARALLEL_SIZE \
     trainer.logger=['console','wandb'] \
     trainer.project_name=$PROJECT_NAME \

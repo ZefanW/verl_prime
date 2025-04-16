@@ -39,7 +39,7 @@ from verl.workers.rollout.base import BaseRollout
 from vllm.distributed import parallel_state as vllm_ps
 from vllm import LLM, SamplingParams
 from verl.third_party.vllm import vllm_version
-
+import os
 # TODO
 # 1. support pp in vllm
 # 2. passing tokenizer is not necessary? no encoding/decoding is happending here
@@ -86,7 +86,7 @@ class vLLMRollout(BaseRollout):
 
         if kwargs.get('train_tp', None) is not None:
             # deployed with megatron
-            import os
+
             os.environ['CUDA_TIMER_STREAM_KAFKA_ENABLE'] = '0'
             os.environ['MEGATRON_IMPORT_TIMERS'] = '0'
             train_tp = kwargs.get('train_tp', None)
@@ -112,6 +112,7 @@ class vLLMRollout(BaseRollout):
             max_num_batched_tokens=max_num_batched_tokens,
             enable_chunked_prefill=config.enable_chunked_prefill,
             enable_prefix_caching=True,
+            seed=int(os.getenv("RANK", "0")) // tensor_parallel_size,
         )
 
         # Offload vllm model to reduce peak memory usage
@@ -187,8 +188,18 @@ class vLLMRollout(BaseRollout):
                 'prompt_token_ids': raw_prompt_ids
             } for raw_prompt_ids in non_tensor_batch.pop('raw_prompt_ids')]
 
+        is_validating = prompts.meta_info.get('validate', False)
         do_sample = prompts.meta_info.get('do_sample', True)
-        if not do_sample:
+        if is_validating and do_sample:
+            kwargs = {
+                'best_of': 1,
+                'top_p': 0.95,
+                'top_k': -1,
+                'min_p': 0.0,
+                'temperature': 1.0,
+                'n': 1
+            }
+        elif not do_sample:
             kwargs = {
                 'best_of': 1,
                 'top_p': 1.0,

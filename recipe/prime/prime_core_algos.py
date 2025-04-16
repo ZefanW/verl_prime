@@ -36,8 +36,12 @@ def compute_prime_advantage_return(data: verl.DataProto, eos_mask: torch.Tensor,
         Q_tensor[:,0]=0
         for start_pos in range(0,q_tensor.shape[0], n_samples):
             # highlight: partition暂时被修改，partition总是直接等于acc-value_last，加上这个以后可以让prime在训崩以后还能重新把acc拉起来
-            partition = (data.batch['acc'][start_pos:start_pos+n_samples] - V_last[start_pos:start_pos+n_samples])
-            Q_tensor[start_pos:start_pos+n_samples] += partition.unsqueeze(-1)
+            # highlight 2: BT model和reward model之间确实无法直接统一，而且BT unbound似乎真的引入了一些问题。在这里出于稳定性的考虑，将iprm的输出首先norm到0-1范围内。多少属于没有办法的办法
+            # partition = (data.batch['acc'][start_pos:start_pos+n_samples] - V_last[start_pos:start_pos+n_samples])
+            # Q_tensor[start_pos:start_pos+n_samples] += partition.unsqueeze(-1)
+            Q_tensor[start_pos:start_pos+n_samples] = (Q_tensor[start_pos:start_pos+n_samples]-Q_tensor[start_pos:start_pos+n_samples].min())/(Q_tensor[start_pos:start_pos+n_samples].max()-Q_tensor[start_pos:start_pos+n_samples].min())
+
+
         Q_tensor[eos_mask==0]=0
         # V(t) = Q(t-1)，V_0应该总是partition，相当于V_value需要把Q整体后移一位才对
         # 注意Q_tensor的含义是V，不要搞混

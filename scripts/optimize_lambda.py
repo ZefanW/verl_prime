@@ -119,7 +119,7 @@ def bayesian_optimize(score_dict, pattern):
     )
     for k,v in lam2score.items():
         optimizer.register(params={'x':k}, target=v)
-    optimizer.register(params={'x':1.0}, target=0.85)
+    # optimizer.register(params={'x':1.0}, target=0.85)
     next_point_to_probe=optimizer.suggest()
     print('next lambda to probe: '+str(next_point_to_probe))
     plot_gp(optimizer, np.linspace(0,1.0,100).reshape(-1,1))
@@ -128,6 +128,6 @@ def bayesian_optimize(score_dict, pattern):
 
 
 if __name__=='__main__':
-    score_dict = calc_auc('/home/wangzefan/data/verl_prime/eval_results/wandb_export_2025-04-14T22_41_41.917+08_00.csv',255)
+    score_dict = calc_auc('/home/wangzefan/data/verl_prime/eval_results/wandb_export_2025-04-16T10_40_32.300+08_00.csv',255)
 
-    bayesian_optimize(score_dict, r"^prime-([0-9]+\.[0-9]+)-strict-dpo-tll-freeze-lowbeta-clip-clipvalue - acc$")
+    bayesian_optimize(score_dict, r"^prime-([0-9]+\.[0-9]*)-strict-dpo-tll-freeze-noavgpar - acc$")

@@ -23,7 +23,7 @@ export HEAD_IP
 
 srun -n8 -N8 bash -c '
 source /home/wangzefan/anaconda3/etc/profile.d/conda.sh
-conda activate verl
+conda activate verl083
 
 cd /home/wangzefan/data/verl_prime
 source examples/0302/wzf_qy_env.sh
@@ -40,12 +40,12 @@ fi
 export NCCL_IB_HCA=$(ibstatus | grep "Infiniband device" | awk -F"'\''" '\''{print $2}'\'' | paste -sd, -)
 
 export GLOO_SOCKET_IFNAME=$NIC
-export UCX_NET_DEVICES=$NIC
-export NCCL_SOCKET_IFNAME=$NIC
+# export UCX_NET_DEVICES=$NIC
+# export NCCL_SOCKET_IFNAME=$NIC
 
 # 设置通信并发，似乎小的数值对all reduce更友好
 
-export CUDA_DEVICE_MAX_CONNECTIONS=32
+# export CUDA_DEVICE_MAX_CONNECTIONS=32
 
 # 启动 Ray 集群，在首结点启动 head，其它节点作为 worker 连接
 
@@ -53,11 +53,12 @@ echo "Running on $(hostname), SLURM_NODEID=$SLURM_NODEID"
 ray stop --force
 if [ "$SLURM_NODEID" -eq 0 ]; then
   echo "Starting Ray head on $(hostname)"
-  ray start --head --port=6379 --node-ip-address=$HEAD_IP --resources='\''{"worker": 0}'\'' --system-config='\''{
+  ray start --head --port=6379 --node-ip-address=$HEAD_IP --resources='\''{"worker": 1}'\'' --system-config='\''{
   "worker_register_timeout_seconds": 60,
   "object_timeout_milliseconds": 600000,
   "gcs_redis_heartbeat_interval_milliseconds": 10000,
-  "core_worker_internal_heartbeat_ms": 10000
+  "core_worker_internal_heartbeat_ms": 10000,
+  "num_workers_soft_limit": 8
 }'\''
 #--num-cpus=32
 
