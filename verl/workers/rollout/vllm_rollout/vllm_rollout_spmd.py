@@ -227,7 +227,7 @@ class vLLMRollout(BaseRollout):
         response = pad_2d_list_to_length(response, self.pad_token_id,
                                          max_length=self.config.response_length).to(idx.device)
 
-        if self.config.n > 1 and do_sample:
+        if self.config.n > 1 and do_sample and not is_validating:
             idx = _repeat_interleave(idx, self.config.n)
             attention_mask = _repeat_interleave(attention_mask, self.config.n)
             position_ids = _repeat_interleave(position_ids, self.config.n)

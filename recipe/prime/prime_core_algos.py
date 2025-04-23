@@ -17,7 +17,7 @@ import verl
 import verl.utils.torch_functional as verl_F
 from verl.trainer.ppo.core_algos import compute_value_model_metrics
 
-def compute_prime_advantage_return(data: verl.DataProto, eos_mask: torch.Tensor, n_samples, config):
+def compute_prime_advantage_return(data: verl.DataProto, eos_mask: torch.Tensor, n_samples, config, dpo_acc=0.5):
     # 把PRIME的输出当做value model来用，这会有一个partition项需要估计，这里简单处理就直接平均作差完事。
     # 然后再来GAE。可以确保这样做和PRIME等同。
     prompt_ids = data.batch['prompts']
@@ -34,13 +34,27 @@ def compute_prime_advantage_return(data: verl.DataProto, eos_mask: torch.Tensor,
         Q_tensor = q_tensor.cumsum(dim=-1)
         Q_tensor[:,1:]=q_tensor[:,:-1]
         Q_tensor[:,0]=0
-        for start_pos in range(0,q_tensor.shape[0], n_samples):
+        # for start_pos in range(0,q_tensor.shape[0], n_samples):
             # highlight: partition暂时被修改，partition总是直接等于acc-value_last，加上这个以后可以让prime在训崩以后还能重新把acc拉起来
             # highlight 2: BT model和reward model之间确实无法直接统一，而且BT unbound似乎真的引入了一些问题。在这里出于稳定性的考虑，将iprm的输出首先norm到0-1范围内。多少属于没有办法的办法
+            # highlight 3: 直接把温度缩放拿出来用，这是直接由BT的特性导出的。平均最后一个token的得分，来寻找计算结果应该用的参照得分是多少
+            # highlight 4: 利用整体acc来求baseline，注意这是个有偏估计
             # partition = (data.batch['acc'][start_pos:start_pos+n_samples] - V_last[start_pos:start_pos+n_samples])
             # Q_tensor[start_pos:start_pos+n_samples] += partition.unsqueeze(-1)
-            Q_tensor[start_pos:start_pos+n_samples] = (Q_tensor[start_pos:start_pos+n_samples]-Q_tensor[start_pos:start_pos+n_samples].min())/(Q_tensor[start_pos:start_pos+n_samples].max()-Q_tensor[start_pos:start_pos+n_samples].min())
+            # Q_tensor[start_pos:start_pos+n_samples] = (Q_tensor[start_pos:start_pos+n_samples]-Q_tensor[start_pos:start_pos+n_samples].min())/(Q_tensor[start_pos:start_pos+n_samples].max()-Q_tensor[start_pos:start_pos+n_samples].min())
 
+            # avg_score = V_last[start_pos:start_pos+n_samples].mean()
+            # avg_reward = data.batch['acc'][start_pos:start_pos+n_samples].mean() # 注意偶尔avg_reward会是0
+            # avg_reward=torch.clamp(avg_reward,1/n_samples,1-1/n_samples)
+            # baseline_score = avg_score + torch.log((1-avg_reward)/avg_reward)
+            # Q_tensor[start_pos:start_pos+n_samples]=torch.sigmoid(Q_tensor[start_pos: start_pos+n_samples]-baseline_score)
+        if config.reward_model.model.loss_type == 'dpo':
+            avg_score = V_last.mean()
+            avg_reward=data.batch['acc'].mean()
+            baseline_score=avg_score+torch.log((1-avg_reward)/avg_reward)
+            Q_tensor = torch.sigmoid(Q_tensor-baseline_score)
+        else:
+            Q_tensor = torch.sigmoid(Q_tensor)
 
         Q_tensor[eos_mask==0]=0
         # V(t) = Q(t-1)，V_0应该总是partition，相当于V_value需要把Q整体后移一位才对
@@ -60,7 +74,7 @@ def compute_prime_advantage_return(data: verl.DataProto, eos_mask: torch.Tensor,
         # Q_tensor = 1-(1-Q_tensor)/(1-Q_min)
         # Q_tensor[eos_mask == 0] = 0
 
-        metrics=compute_value_model_metrics(Q_tensor, eos_mask, data.batch['acc'])
+
 
         # reward tensor在这里需要被保留
         token_level_rewards=torch.zeros_like(q_tensor)
@@ -82,6 +96,7 @@ def compute_prime_advantage_return(data: verl.DataProto, eos_mask: torch.Tensor,
         returns = advantages + Q_tensor
         advantages = verl_F.masked_whiten(advantages, eos_mask)
 
+        metrics=compute_value_model_metrics(Q_tensor, eos_mask, data.batch['acc'], returns)
 
     return advantages, returns, metrics
 
@@ -220,7 +235,25 @@ def compute_dpo_accuracy(token_level_scores, acc, eos_mask, n_samples):
 
     return torch.cat(dpo_acc, dim=0).mean()
 
+def compute_dpo_continual_accuracy(token_level_scores, acc, eos_mask, n_samples): # 确定连续正确性的高低，后面用来做platt calibration，基本假设是现有模型对于每个sample的continual acc一致
+    dpo_acc = []
+    for start_id in range(0, token_level_scores.shape[0], n_samples):
+        cur_scores = (token_level_scores[start_id:start_id + n_samples] *
+                      eos_mask[start_id:start_id + n_samples]).sum(dim=1)
 
+        def get_upper_triangle(tensor_x):
+            diff_matrix = tensor_x.unsqueeze(1) - tensor_x.unsqueeze(0)
+            upper_tri_indices = torch.triu(torch.ones_like(diff_matrix).bool(), diagonal=1)
+            return diff_matrix[upper_tri_indices]
+
+        cur_acc_diff = get_upper_triangle(acc[start_id:start_id + n_samples])  # in range [-1,1]
+        cur_score_diff = get_upper_triangle(cur_scores)  # in R
+        cur_score_diff_signed = cur_score_diff*cur_acc_diff # 同对同错的，score会变成0，正确率是0.5
+        cur_acc = torch.sigmoid(cur_score_diff_signed)
+
+        dpo_acc.append(cur_acc.unsqueeze(0))
+
+    return torch.cat(dpo_acc, dim=0).mean()
 def compute_dpo_abs_accuracy(token_level_scores, acc, eos_mask, n_samples):
     return (torch.sign((token_level_scores * eos_mask).sum(dim=-1)) == torch.sign(acc * 2 - 1)).float().mean()
 

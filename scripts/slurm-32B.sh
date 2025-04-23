@@ -79,7 +79,7 @@ while true; do
     if [ "$SLURM_NODEID" -eq 1 ]; then
       echo "Starting main Ray script on head node..."
       export WANDB_DIR=/home/wangzefan/data/verl_prime/
-      bash examples/32BPRIME/prime-after.sh
+      bash examples/32BPRIME/7b_distill.sh
       ret_code=$?
       if [ $ret_code -ne 0 ]; then
         echo "Main script exited with code ${ret_code}. Restarting after 10 seconds..."

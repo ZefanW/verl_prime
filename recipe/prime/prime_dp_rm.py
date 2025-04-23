@@ -145,6 +145,8 @@ class DataParallelPRIMERewardModel:
             action_prob = torch.exp(micro_batch['old_log_probs'])[:, -num_actions:]
             ref_log_labels = (1 - action_prob) * micro_batch['ref_log_prob'][:, -num_actions:]
             rm_log_labels[:, -num_actions:] *= (1 - action_prob)
+        elif self.config.model.ref_type == 'none':
+            ref_log_labels = torch.zeros_like(micro_batch['old_log_probs'])
         else:
             raise NotImplementedError
 
@@ -174,7 +176,7 @@ class DataParallelPRIMERewardModel:
 
             # generalized estimation of r should go before the reward filling. r means process reward for policy model, or the advantage of reward model.
             lam = self.config.get('lambda', 0.)
-            beta = self.config.model.get('beta_train', 0.05)
+            beta = self.config.model.get('beta_test', 0.05)
             if lam == 0.:
                 r = q_ * beta
             else:
@@ -205,7 +207,7 @@ class DataParallelPRIMERewardModel:
             else:
                 raise NotImplementedError
 
-        return token_level_score, q
+        return token_level_score, q # token_level_score is weighted by beta_test, q is weighted by 1.
 
     def _optimizer_step(self):
         assert self.config.model.optim.grad_clip is not None
@@ -267,7 +269,8 @@ class DataParallelPRIMERewardModel:
 
         return rm_scores, q.detach(), {
             'reward_model/reward': rm_scores.sum(dim=-1).mean().item(),
-            'reward_model/raw_reward': q.sum(dim=-1).mean().item()
+            'reward_model/raw_reward': q.sum(dim=-1).mean().item(),
+            'reward_model/max_reward': q.sum(dim=-1).max().item()
         }
 
     def update_rm(self, data: DataProto):
@@ -377,7 +380,8 @@ class DataParallelPRIMERewardModel:
 
         metrics.update({
             'reward_model/reward': rm_scores.sum(dim=-1).mean().item(),
-            'reward_model/raw_reward': q.sum(dim=-1).mean().item()
+            'reward_model/raw_reward': q.sum(dim=-1).mean().item(),
+            'reward_model/max_reward': q.sum(dim=-1).max().item()
         })
 
         return rm_scores, metrics

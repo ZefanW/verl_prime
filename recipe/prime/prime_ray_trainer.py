@@ -23,6 +23,7 @@ from collections import defaultdict
 from copy import deepcopy
 from pprint import pprint
 
+import math
 import numpy as np
 import torch
 from omegaconf import OmegaConf, open_dict
@@ -39,7 +40,7 @@ from .prime_core_algos import compute_return_abs_accuracy, compute_return_smooth
 from verl.trainer.ppo.core_algos import compute_reinforce_plus_plus_outcome_advantage
 
 
-def compute_advantage(data: DataProto, adv_estimator, config):
+def compute_advantage(data: DataProto, adv_estimator, config, dpo_acc=0.5):
     metrics={}
     if adv_estimator == 'rloo':
         responses = data.batch['responses']
@@ -76,7 +77,7 @@ def compute_advantage(data: DataProto, adv_estimator, config):
         attention_mask = data.batch['attention_mask']
         response_mask = attention_mask[:, -response_length:]
         advantages, returns, metrics = prime_core_algos.compute_prime_advantage_return(data, response_mask,
-                                                                             config.actor_rollout_ref.rollout.n, config)
+                                                                             config.actor_rollout_ref.rollout.n, config, dpo_acc)
         data.batch['advantages'] = advantages
         data.batch['returns'] = returns
         data.meta_info['adv_metrics'] = metrics
@@ -400,6 +401,14 @@ class RayPRIMETrainer(RayPPOTrainer):
                 metrics = {}
                 timing_raw = {}
 
+                # change beta according to config
+                if self.config.reward_model.model.get('beta_double', None) is not None:
+                    if self.global_steps==1:
+                        self.beta=self.config.reward_model.model.get('beta_train',0.05)
+                    real_beta = self.beta * math.pow(2, self.global_steps/self.config.reward_model.model.get('beta_double', None))
+                    print('beta: '+str(real_beta))
+                    self.config.reward_model.model.beta_train = real_beta
+
                 # pop those keys for generation
                 gen_batch = batch.pop(batch_keys=['input_ids', 'attention_mask', 'position_ids'])
 
@@ -444,7 +453,8 @@ class RayPRIMETrainer(RayPPOTrainer):
 
                     # verify
                     with _timer('verify', timing_raw):
-                        scores = self.reward_fn.verify(batch)
+                        n_samples = self.config.actor_rollout_ref.rollout.n
+                        scores = self.reward_fn.verify(batch, n_samples=n_samples)
                         metrics['acc'] = statistics.mean(scores)
                         metrics.update(self.metric_sources(batch))
 
@@ -472,13 +482,15 @@ class RayPRIMETrainer(RayPPOTrainer):
                             batch = batch.union(ref_log_prob)
 
                     with _timer('adv', timing_raw):
-
+                        dpo_acc = 0.5
                         if self.use_rm:
                             update_style = self.config.reward_model.model.get('update', 'none')
                             if update_style == 'none':  # only run forward
                                 reward_output = self.rm_wg.compute_rm_score(batch)
+
                             elif update_style == 'after':  # update and directly return the reward
                                 reward_output = self.rm_wg.update_rm(batch)
+                                dpo_acc = reward_output.meta_info['metrics']['reward_model/dpo_acc_continual_before']
                             elif update_style == 'before':  # update reward model, and then run forward
                                 reward_output = self.rm_wg.update_rm(batch)
                                 if 'metrics' in reward_output.meta_info.keys():
@@ -486,6 +498,7 @@ class RayPRIMETrainer(RayPPOTrainer):
                                     metrics.update(reward_output_metrics)
 
                                 reward_output = self.rm_wg.compute_rm_score(batch)
+                                dpo_acc = reward_output.meta_info['metrics']['reward_model/dpo_acc_continual']
                             elif update_style == 'reverse':  # run forward to calculate statistics, then update reward model
                                 reward_output = self.rm_wg.compute_rm_score(batch)
                                 # broadcast q and acc tensor to each result
@@ -500,6 +513,7 @@ class RayPRIMETrainer(RayPPOTrainer):
                                     })
                                 batch = batch.union(bc_td)
                                 reward_output = self.rm_wg.update_rm(batch)
+                                dpo_acc = reward_output.meta_info['metrics']['reward_model/dpo_acc_continual_before']
                             else:
                                 raise NotImplementedError
                             batch = batch.union(reward_output)
@@ -512,7 +526,8 @@ class RayPRIMETrainer(RayPPOTrainer):
                         # compute advantages, executed on the driver process
                         batch = compute_advantage(batch,
                                                   adv_estimator=self.config.algorithm.adv_estimator,
-                                                  config=self.config)
+                                                  config=self.config,
+                                                  dpo_acc=dpo_acc)
                         if 'adv_metrics'in batch.meta_info:
                             metrics.update(batch.meta_info['adv_metrics'])
 

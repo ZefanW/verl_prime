@@ -59,6 +59,8 @@ reward_model:
       weight_decay: 0.
       grad_clip: 10.0
     beta_train: 0.05
+    beta_double: null
+    beta_test: 0.05 # 求value的时候用这个，求loss的时候用beta_train
     loss_type: ce # currently only supports ce loss
   prime_granularity: token
   prime_norm: batch_norm # batch_norm or none. if set to none, the normalizer is beta_train

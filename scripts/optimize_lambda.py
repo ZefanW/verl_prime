@@ -39,7 +39,7 @@ def calc_auc(csv_file_name, total_steps):
     for k in csv_file.columns:
         score_list=csv_file[k].to_numpy()
         score_list=score_list[~np.isnan(score_list)]
-        score_list=ema(score_list)
+        # score_list=ema(score_list)
         if len(score_list)<total_steps:
             score_list=np.pad(score_list, (0, total_steps-len(score_list)), mode='constant', constant_values=0)
         else:
@@ -57,11 +57,12 @@ def posterior(optimizer, grid):
     mu, sigma = optimizer._gp.predict(grid, return_std=True)
     return mu, sigma
 
-def plot_gp(optimizer, x, y=None):
+def plot_gp(optimizer, x, y=None, name=None):
     fig = plt.figure(figsize=(16, 10))
     steps = len(optimizer.space)
     fig.suptitle(
-        'Gaussian Process and Utility Function After {} Steps'.format(steps),
+        # 'Gaussian Process and Utility Function After {} Steps'.format(steps),
+        name,
         fontsize=30
     )
 
@@ -89,7 +90,7 @@ def plot_gp(optimizer, x, y=None):
     axis.set_xlabel('x', fontdict={'size':20})
 
 
-    utility_function = acquisition.UpperConfidenceBound(kappa=2.5)
+    utility_function = acquisition.UpperConfidenceBound(kappa=1.0)
     utility = -1 * utility_function._get_acq(gp=optimizer._gp)(x)
     x = x.flatten()
 
@@ -103,7 +104,7 @@ def plot_gp(optimizer, x, y=None):
 
     axis.legend(loc=2, bbox_to_anchor=(1.01, 1), borderaxespad=0.)
     acq.legend(loc=2, bbox_to_anchor=(1.01, 1), borderaxespad=0.)
-def bayesian_optimize(score_dict, pattern):
+def bayesian_optimize(score_dict, pattern, name=None,scale='linear'):
     re_pattern = re.compile(pattern)
     lam2score={}
     for k,v in score_dict.items():
@@ -112,22 +113,44 @@ def bayesian_optimize(score_dict, pattern):
             lam2score[float(match.group(1))]=v
     optimizer = BayesianOptimization(
         f=None,
-        acquisition_function=acquisition.UpperConfidenceBound(kappa=2.5),
+        acquisition_function=acquisition.UpperConfidenceBound(kappa=1.0),
         pbounds={'x': (0, 1.0)},
         verbose=2,
         random_state=1,
     )
+    optimizer.set_gp_params(alpha=0.05, n_restarts_optimizer=5)
+    lam2score={i: lam2score[i] for i in sorted(lam2score.keys())}
     for k,v in lam2score.items():
+        # if k==0.25 or k==0.9 or k==0.95:
+        # if k==0.99 or k==0.95 or k==0.25 or k==1 or k==0.5:
+        # if k!=0 and k!=1 and k!=0.5:
+        #     continue
+        if k in [0.95]:
+            continue
         optimizer.register(params={'x':k}, target=v)
     # optimizer.register(params={'x':1.0}, target=0.85)
+    # optimizer.register(params={'x':0.2499958}, target=lam2score[0.25]+0.25-0.2499958)
+    # optimizer.register(params={'x':0.89898}, target=lam2score[0.9]+0.9-0.89898)
+    # optimizer.register(params={'x':0.89409}, target=lam2score[0.9]+0.9-0.89409)
+    # optimizer.register(params={'x':0.90691}, target=lam2score[0.9]+0.9-0.90691)
+    # optimizer.register(params={'x':0.98602}, target=lam2score[0.99]+0.99-0.98602)
     next_point_to_probe=optimizer.suggest()
     print('next lambda to probe: '+str(next_point_to_probe))
-    plot_gp(optimizer, np.linspace(0,1.0,100).reshape(-1,1))
+    plot_gp(optimizer, np.linspace(0,1.0,100).reshape(-1,1), name=name)
     plt.show()
 
 
 
 if __name__=='__main__':
-    score_dict = calc_auc('/home/wangzefan/data/verl_prime/eval_results/wandb_export_2025-04-16T10_40_32.300+08_00.csv',255)
+    # score_dict = calc_auc('/home/wangzefan/data/verl_prime/eval_results/wandb_export_2025-04-21T15_38_56.889+08_00.csv',255) # result of prime value model with platt(which is not so correct)
+    # bayesian_optimize(score_dict, r"^prime-([0-9]+\.[0-9]*)-strict-dpo-tll-freeze-platt - train_acc/aime-aops$", name = 'Lam vs AUC landscape ( Prime Value Model)')
 
-    bayesian_optimize(score_dict, r"^prime-([0-9]+\.[0-9]*)-strict-dpo-tll-freeze-noavgpar - acc$")
+    score_dict = calc_auc('/home/wangzefan/data/verl_prime/eval_results/Qwen2.5-Math-1.5B-MATH-decoupled_ppo.csv',255)
+    bayesian_optimize(score_dict, r"^Qwen2.5-Math-1.5B-MATH-([0-9]+\.[0-9]*)-decoupled - acc$", name='Lam vs AUC landscape ( Decoupled PPO )', scale='log')
+
+    # score_dict = calc_auc('/home/wangzefan/data/verl_prime/eval_results/Qwen2.5-Math-1.5B-MATH-ppo.csv',255)
+    # bayesian_optimize(score_dict, r"Qwen2.5-Math-1.5B-MATH-([0-9]+\.[0-9]*) - acc$", name='Lam vs AUC landscape ( PPO )')
+
+    # score_dict = calc_auc('/home/wangzefan/data/verl_prime/eval_results/Qwen2.5-Math-1.5B-MATH-ce_value.csv',255)
+    # bayesian_optimize(score_dict, r"Qwen2.5-Math-1.5B-MATH-([0-9]+\.[0-9]*)-CE - acc$", name='Lam vs AUC landscape ( CE-PPO )')
+

@@ -112,7 +112,7 @@ class DataParallelPPOCritic(BasePPOCritic):
                 values = values[:, -response_length - 1:-1].squeeze(-1)
 
             # 如果loss是CE，那么这里需要sigmoid
-            if self.config.critic_loss == 'ce':
+            if self.config.critic_loss in ['ce','sigtd','logsumexp1','triple1','avg1']:
                 values = torch.sigmoid(values)
 
             return values
@@ -219,9 +219,11 @@ class DataParallelPPOCritic(BasePPOCritic):
                     eos_mask = attention_mask[:, -response_length - 1:-1]
 
                     vpreds = self._forward_micro_batch(data) # 和DPO model是有区别的，value model的poss0其实是-1，q model才是0
+                    max_positions = eos_mask.sum(dim=-1)-1
+                    last_value_preds=vpreds[torch.arange(0,values.shape[0],dtype=torch.long, device=values.device), max_positions]
 
                     # assert not torch.any(torch.isnan(vpreds)).item()
-                    if self.config.critic_loss == 'td':
+                    if self.config.critic_loss in ['td','sigtd']:
                         vf_loss, vf_clipfrac = core_algos.compute_value_loss(vpreds=vpreds,
                                                                              values=values,
                                                                              returns=returns,
@@ -230,6 +232,33 @@ class DataParallelPPOCritic(BasePPOCritic):
                     elif self.config.critic_loss == 'ce':
                         acc = data['acc'].unsqueeze(1).expand(vpreds.size(0), vpreds.size(1)).to(vpreds.dtype)
                         vf_loss = torch.nn.functional.binary_cross_entropy(vpreds[eos_mask==1], acc[eos_mask==1])
+                        vf_clipfrac = torch.zeros_like(vf_loss)
+                    elif self.config.critic_loss == 'logsumexp1': # 指数域拟合value，last value的拟合方式不变，只改变prefix value对last value的拟合关系。最后的V的拟合方式直接照搬ce，因为是最好的
+                        beta=0.05
+                        acc = data['acc'].unsqueeze(1).expand(vpreds.size(0), vpreds.size(1)).to(vpreds.dtype)
+                        # vf_loss_last = torch.nn.functional.binary_cross_entropy(last_value_preds.float(), data['acc'])
+                        vf_loss_last = torch.nn.functional.binary_cross_entropy(vpreds[eos_mask == 1], acc[eos_mask == 1])
+                        vf_loss_seq = ((torch.exp(vpreds[eos_mask==1]) - torch.exp(last_value_preds.unsqueeze(1).expand(vpreds.size(0), vpreds.size(1)).to(vpreds.dtype))[eos_mask==1])**2).mean()
+                        vf_loss = vf_loss_last + vf_loss_seq*10
+                        # vf_loss = (vpreds[eos_mask==1] + beta*torch.exp((acc-vpreds)/beta)[eos_mask==1]).mean()
+                        vf_clipfrac = torch.zeros_like(vf_loss)
+                    elif self.config.critic_loss == 'triple1': # 三次方拟合value
+                        beta = 0.05
+                        acc = data['acc'].unsqueeze(1).expand(vpreds.size(0), vpreds.size(1)).to(vpreds.dtype)
+                        # vf_loss_last = torch.nn.functional.binary_cross_entropy(last_value_preds.float(), data['acc'])
+                        vf_loss_last = torch.nn.functional.binary_cross_entropy(vpreds[eos_mask == 1],
+                                                                                acc[eos_mask == 1])
+                        vf_loss_seq = (((vpreds[eos_mask==1])**3 - last_value_preds.unsqueeze(1).expand(vpreds.size(0), vpreds.size(1)).to(vpreds.dtype)[eos_mask==1]**3)**2).mean()
+                        vf_loss = vf_loss_last + vf_loss_seq*10
+                        # vf_loss = (vpreds[eos_mask==1]**4/4+torch.exp(acc-vpreds)[eos_mask==1]**3*vpreds[eos_mask==1]).mean()/(beta**3)
+                        vf_clipfrac = torch.zeros_like(vf_loss)
+                    elif self.config.critic_loss == 'avg1': # ce 拟合最终loss，前面的还是直接用mse
+                        # vf_loss_last = torch.nn.functional.binary_cross_entropy(last_value_preds.float(), data['acc'])
+                        vf_loss_last = torch.nn.functional.binary_cross_entropy(vpreds[eos_mask == 1],
+                                                                                acc[eos_mask == 1])
+                        vf_loss_seq = ((vpreds[eos_mask==1] - last_value_preds.unsqueeze(1).expand(vpreds.size(0), vpreds.size(1)).to(vpreds.dtype)[eos_mask==1])**2).mean()
+                        vf_loss = vf_loss_last + vf_loss_seq*10
+                        # vf_loss = (vpreds[eos_mask==1] + beta*torch.exp((acc-vpreds)/beta)[eos_mask==1]).mean()
                         vf_clipfrac = torch.zeros_like(vf_loss)
                     else:
                         raise NotImplementedError

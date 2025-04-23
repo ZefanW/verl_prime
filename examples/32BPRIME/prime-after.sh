@@ -3,10 +3,12 @@
 
 
 PROJECT_NAME='PRIMER'
-EXPERIMENT_NAME='baseline-dapo-608cont'
+EXPERIMENT_NAME='baseline-dapo-608cont-64cont-80cont-224cont'
 SFT_MODEL_PATH=/home/wangzefan/huggingface/Qwen2.5-32B
 DAPO=/home/wangzefan/dataset/dataset/prime-rl-math-wo-prompt/dapo.parquet
 AIME=/home/wangzefan/dataset/dataset/prime-rl-math-wo-prompt/aime2024_32.parquet
+AIME24_TTRL=/home/wangzefan/dataset/dataset/prime-rl-math-wo-prompt/aime2024_128_ttrl.parquet
+AIME25_TTRL=/home/wangzefan/dataset/dataset/prime-rl-math-wo-prompt/aime2025_128_ttrl.parquet
 # dynamic batch size不太重要
 PARALLEL_SIZE=1
 
@@ -17,7 +19,7 @@ mkdir -p $WANDB_DIR/wandb
 # PRIMER训练曲线里的kl loss暴涨就是这个问题导致的，ref model不会load ckpt，而是永远和actor_rollout.model.ref_path相同，默认值为model.path
 
 python3 -m recipe.prime.main_prime \
-    data.train_files="$DAPO" \
+    data.train_files="[$DAPO]" \
     data.val_files="$AIME" \
     data.train_batch_size=64 \
     data.val_batch_size=6312 \
@@ -29,7 +31,7 @@ python3 -m recipe.prime.main_prime \
     data.accuracy_lower_bound=0.05 \
     data.accuracy_upper_bound=0.95 \
     data.oversample_factor=1 \
-    actor_rollout_ref.model.path=/home/wangzefan/data/verl_prime/checkpoints/PRIMER/baseline-dapo/global_step_608/actor/huggingface \
+    actor_rollout_ref.model.path=/home/wangzefan/data/verl_prime/checkpoints/PRIMER/baseline-dapo-608cont-64cont-80cont/global_step_224/actor/huggingface \
     actor_rollout_ref.model.ref_path=$SFT_MODEL_PATH \
     actor_rollout_ref.actor.optim.lr=5e-7 \
     actor_rollout_ref.model.use_remove_padding=True \
@@ -53,7 +55,7 @@ python3 -m recipe.prime.main_prime \
     algorithm.lam=0. \
     algorithm.reward_gt_coef=5 \
     algorithm.reward_dpo_coef=5 \
-    reward_model.model.path=/home/wangzefan/data/verl_prime/checkpoints/PRIMER/baseline-dapo/global_step_608/reward/huggingface \
+    reward_model.model.path=/home/wangzefan/data/verl_prime/checkpoints/PRIMER/baseline-dapo-608cont-64cont-80cont/global_step_224/reward/huggingface \
     reward_model.model.ref_path=$SFT_MODEL_PATH \
     reward_model.micro_batch_size_per_gpu=1 \
     reward_model.model.update=after \

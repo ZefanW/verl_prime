@@ -3,7 +3,7 @@
 set -x
 
 if [[ -v POLICY ]]; then
-  REF_TYPE='policy+freeze'
+  REF_TYPE='policy'
 else
   REF_TYPE=freeze
 fi
@@ -11,7 +11,7 @@ fi
 echo "running exp on prime lam ${LAM}"
 
 PROJECT_NAME='prime-lambda-exp'
-EXPERIMENT_NAME="prime-${LAM}-strict-dpo-tll-${REF_TYPE}-norm01"
+EXPERIMENT_NAME="prime-${LAM}-ce-tll-${REF_TYPE}-fastrm"
 SFT_MODEL_PATH=/home/wangzefan/huggingface/Qwen2.5-Math-1.5B
 export WANDB_DIR=$WANDB_DIR/wandb_exp/$PROJECT_NAME
 mkdir -p $WANDB_DIR/wandb
@@ -58,16 +58,15 @@ python3 -m recipe.prime.main_prime \
     algorithm.reward_dpo_coef=5 \
     reward_model.model.path=$SFT_MODEL_PATH \
     reward_model.micro_batch_size_per_gpu=1 \
-    reward_model.model.update=after \
     reward_model.model.beta_train=0.05 \
     reward_model.model.optim.lr=1e-6 \
     reward_model.model.optim.grad_clip=10.0 \
     reward_model.model.input_tokenizer=null \
-    reward_model.mini_batch_size=256 \
+    reward_model.mini_batch_size=64 \
     reward_model.ulysses_sequence_parallel_size=$PARALLEL_SIZE \
     reward_model.prime_norm=none \
-    reward_model.model.loss_type=dpo \
-    reward_model.model.update=reverse \
+    reward_model.model.loss_type=ce \
+    reward_model.model.update=before \
     reward_model.model.ref_type=$REF_TYPE \
     critic.optim.lr=1e-6 \
     critic.model.path=$SFT_MODEL_PATH \

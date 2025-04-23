@@ -38,7 +38,7 @@ from verl.workers.sharding_manager.fsdp_ulysses import FSDPUlyssesShardingManage
 
 from codetiming import Timer
 from verl.workers.fsdp_workers import create_device_mesh, get_sharding_strategy
-from .prime_core_algos import compute_dpo_accuracy, compute_dpo_abs_accuracy
+from .prime_core_algos import compute_dpo_accuracy, compute_dpo_abs_accuracy, compute_dpo_continual_accuracy
 
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv('VERL_PPO_LOGGING_LEVEL', 'WARN'))
@@ -271,9 +271,12 @@ class PRIMERewardModelWorker(Worker):
 
             dpo_acc = compute_dpo_accuracy(rm_scores, acc, eos_mask=eos_mask, n_samples=data.meta_info['n'])
             dpo_acc_abs = compute_dpo_abs_accuracy(rm_scores, acc, eos_mask, n_samples=data.meta_info['n'])
+            dpo_acc_continual = compute_dpo_continual_accuracy(rm_scores, acc, eos_mask=eos_mask, n_samples=data.meta_info['n'])
 
             metrics['reward_model/dpo_acc'] = dpo_acc.detach().item()
             metrics['reward_model/dpo_acc_abs'] = dpo_acc_abs.detach().item()
+            metrics['reward_model/dpo_acc_continual'] = dpo_acc_continual.detach().item()
+
 
             output = DataProto.from_dict(tensors={'rm_scores': rm_scores, 'q': q}, meta_info={'metrics': metrics})
             output = self.ulysses_sharding_manager.postprocess_data(data=output)
@@ -309,9 +312,12 @@ class PRIMERewardModelWorker(Worker):
 
             dpo_acc_before = compute_dpo_accuracy(rm_scores, acc, eos_mask=eos_mask, n_samples=data.meta_info['n'])
             dpo_acc_abs = compute_dpo_abs_accuracy(rm_scores, acc, eos_mask, n_samples=data.meta_info['n'])
+            dpo_acc_continual = compute_dpo_continual_accuracy(rm_scores, acc, eos_mask=eos_mask,
+                                                               n_samples=data.meta_info['n'])
 
             metrics['reward_model/dpo_acc_before'] = dpo_acc_before.detach().item()
             metrics['reward_model/dpo_acc_abs_before'] = dpo_acc_abs.detach().item()
+            metrics['reward_model/dpo_acc_continual_before'] = dpo_acc_continual.detach().item()
 
             output = DataProto.from_dict(tensors={'rm_scores': rm_scores}, meta_info={'metrics': metrics})
             output = self.ulysses_sharding_manager.postprocess_data(data=output)

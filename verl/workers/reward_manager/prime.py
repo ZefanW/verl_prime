@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import asyncio
+from collections import Counter
 from concurrent.futures import ProcessPoolExecutor
 from functools import partial
 
@@ -20,6 +21,7 @@ import torch
 
 from verl import DataProto
 from verl.utils.reward_score import _default_compute_score
+from verl.utils.reward_score.prime_math import match_answer, math_normalize, _normalize
 
 
 async def single_compute_score(evaluation_func, completion, reference, task, task_extra_info, executor, timeout=300.):
@@ -91,7 +93,7 @@ class PrimeRewardManager:
         self.num_examine = num_examine  # the number of batches of decoded responses to print to the console
         self.compute_score = compute_score or _default_compute_score
 
-    def verify(self, data):
+    def verify(self, data, n_samples=None):
         """
         verify the batch and save as ``acc`` tensor
         """
@@ -110,6 +112,23 @@ class PrimeRewardManager:
                 sequences_str[i] = '\\boxed{' + sequences_str[i].split('\\boxed{')[-1]
             elif abilities[i] == 'code':
                 sequences_str[i] = sequences_str[i].split('```python')[-1].split('```')[0]
+        # 对于TTRL问题，防止标签泄露，把ground truth改为majority voting
+        if n_samples is not None:
+
+            for start_pos in range(0, len(data_sources), n_samples):
+                if data_sources[start_pos]=='ttrl':
+                    answer_list=[]
+                    for i in range(start_pos, start_pos + n_samples):
+                        _, extracted_answer = match_answer(sequences_str[i])
+                        normalized_answer = math_normalize.normalize_answer(extracted_answer)
+                        normalized_answer2 = _normalize(normalized_answer)
+                        if normalized_answer2 is None or len(normalized_answer2)==0:
+                            normalized_answer2 = "0"
+                        answer_list.append(normalized_answer2)
+                    counter = Counter(answer_list)
+                    mode, count = counter.most_common(1)[0]
+                    for i in range(start_pos, start_pos + n_samples):
+                        ground_truth[i]=mode
 
         assert len(sequences_str) == len(ground_truth) == len(data_sources)
         try:

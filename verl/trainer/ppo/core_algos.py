@@ -105,7 +105,7 @@ def compute_gae_advantage_return(token_level_rewards: torch.Tensor, values: torc
         returns = advantages + values
         advantages = verl_F.masked_whiten(advantages, eos_mask)
 
-        metrics=compute_value_model_metrics(values, eos_mask, token_level_rewards.sum(dim=-1))
+        metrics=compute_value_model_metrics(values, eos_mask, token_level_rewards.sum(dim=-1), returns)
 
     return advantages, returns, metrics
 
@@ -153,8 +153,10 @@ def compute_grpo_outcome_advantage(token_level_rewards: torch.Tensor,
         for i in range(bsz):
             scores[i] = (scores[i] - id2mean[index[i]]) / (id2std[index[i]] + epsilon)
         scores = scores.unsqueeze(-1).tile([1, response_length]) * eos_mask
-
-    return scores, scores
+    metrics = compute_value_model_metrics(
+        token_level_rewards.sum(dim=-1, keepdim=True).tile([1, response_length]) * eos_mask - scores, eos_mask,
+        token_level_rewards.sum(dim=-1))
+    return verl_F.masked_whiten(scores, eos_mask), scores, metrics
 
 
 def compute_rloo_outcome_advantage(token_level_rewards: torch.Tensor,
@@ -198,8 +200,8 @@ def compute_rloo_outcome_advantage(token_level_rewards: torch.Tensor,
                 scores[i] = scores[i] * response_num / (response_num -
                                                         1) - id2mean[index[i]] * response_num / (response_num - 1)
         scores = scores.unsqueeze(-1).tile([1, response_length]) * eos_mask
-
-    return scores, scores
+    metrics = compute_value_model_metrics(token_level_rewards.sum(dim=-1, keepdim=True).tile([1,response_length])*eos_mask-scores, eos_mask, token_level_rewards.sum(dim=-1))
+    return verl_F.masked_whiten(scores, eos_mask), scores, metrics
 
 
 def compute_reinforce_plus_plus_outcome_advantage(token_level_rewards: torch.Tensor, eos_mask: torch.Tensor,
@@ -386,7 +388,7 @@ def kl_penalty(logprob: torch.FloatTensor, ref_logprob: torch.FloatTensor, kl_pe
     raise NotImplementedError
 
 
-def compute_value_model_metrics(value_tensor, eos_mask, outcome_reward):
+def compute_value_model_metrics(value_tensor, eos_mask, outcome_reward, return_tensor=None):
     metrics={}
     last_pos=eos_mask.sum(dim=-1)-1
     # td0 loss
@@ -400,9 +402,18 @@ def compute_value_model_metrics(value_tensor, eos_mask, outcome_reward):
     # td1 loss
     metrics['td1'] = verl_F.masked_mean((outcome_reward.unsqueeze(-1)-value_tensor)**2, eos_mask).item()
 
-    # exp var
+    # exp var, if return tensor is none, we directly use lam=1.0, gamma=1.0, which means the return equals final reward
+    if return_tensor is None:
+        return_tensor = eos_mask * outcome_reward.unsqueeze(-1)
+    metrics['exp_var'] = 1.0 - verl_F.masked_var(return_tensor-value_tensor, eos_mask).item() / verl_F.masked_var(return_tensor, eos_mask).item() if verl_F.masked_var(return_tensor, eos_mask).item()>0 else 0.
     return_tensor = eos_mask * outcome_reward.unsqueeze(-1)
-    metrics['exp_var'] = 1.0 - verl_F.masked_var(return_tensor-value_tensor, eos_mask).item() / verl_F.masked_var(return_tensor, eos_mask).item()
+    metrics['exp_var_MCreturn'] = 1.0 - verl_F.masked_var(return_tensor-value_tensor, eos_mask).item() / verl_F.masked_var(return_tensor, eos_mask).item() if verl_F.masked_var(return_tensor, eos_mask).item()>0 else 0.
+
+    # optimal exp var, 对value做仿射变换后最多能获得多大的exp var
+    metrics['Corr_MCreturn'] = verl_F.masked_mean(verl_F.masked_whiten(return_tensor,eos_mask)*verl_F.masked_whiten(value_tensor, eos_mask), eos_mask).item()
+
+    # td(1)对td(\inf)的表示能力，这里直接用corr显示
+    metrics['Corr_td0_td1'] = verl_F.masked_mean(verl_F.masked_whiten(value_next-value_tensor,eos_mask)*verl_F.masked_whiten(outcome_reward.unsqueeze(-1)-value_tensor, eos_mask), eos_mask).item()
 
     # unexp var
     # lstsq=torch.lstsq(value_tensor[eos_mask==1], return_tensor[eos_mask==1])

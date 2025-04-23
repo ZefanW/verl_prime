@@ -7,16 +7,17 @@ else
   LAMC=$LAM
 fi
 
-if [[ -v CE ]]; then
-  LOSS_TYPE=ce
-else
-  LOSS_TYPE=td
-fi
+#if [[ -v CE ]]; then
+#  LOSS_TYPE=ce
+#else
+#  LOSS_TYPE=td
+#fi
+# LOSS_TYPE可以设置ce, td, sigtd
 
 echo "running exp on ppo lam ${LAMC} ${LAM} with ${LOSS_TYPE} loss"
 
 PROJECT_NAME='prime-lambda-exp'
-EXPERIMENT_NAME="ppo-${LAMC}-${LAM}-${LOSS_TYPE}"
+EXPERIMENT_NAME="ppo-${LAMC}-${LAM}-${LOSS_TYPE}-fastrm"
 SFT_MODEL_PATH=/home/wangzefan/huggingface/Qwen2.5-Math-1.5B
 export WANDB_DIR=$WANDB_DIR/wandb_exp/$PROJECT_NAME
 mkdir -p $WANDB_DIR/wandb
@@ -66,6 +67,7 @@ python3 -m verl.trainer.main_ppo \
     critic.model.fsdp_config.optimizer_offload=True \
     critic.model.use_remove_padding=True \
     critic.ppo_micro_batch_size_per_gpu=2 \
+    critic.ppo_mini_batch_size=64 \
     critic.critic_loss=$LOSS_TYPE \
     trainer.logger=['console','wandb'] \
     trainer.project_name=$PROJECT_NAME \
