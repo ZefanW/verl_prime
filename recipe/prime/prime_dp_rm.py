@@ -19,11 +19,12 @@ from typing import Iterable
 
 import torch
 import torch.distributed
+from click.core import F
 from torch import nn, optim
 
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 
-from .prime_core_algos import compute_ce_dpo_loss_rm, compute_detach_dpo_loss_rm
+from .prime_core_algos import compute_ce_dpo_loss_rm, compute_detach_dpo_loss_rm, compute_margin_ce_dpo_loss_rm
 from verl import DataProto
 from verl.trainer.ppo import core_algos
 from verl.workers.critic import BasePPOCritic
@@ -200,7 +201,7 @@ class DataParallelPRIMERewardModel:
 
             if self.config.prime_granularity == 'token':
                 for i in range(micro_batch['input_ids'].shape[0]):
-                    token_level_score[i, :max_positions[i] - 1] = r[i, :max_positions[i] - 1]
+                    token_level_score[i, :max_positions[i]] = r[i, :max_positions[i]]
             elif self.config.prime_granularity == 'whole':
                 for i in range(micro_batch['input_ids'].shape[0]):
                     token_level_score[i, max_positions[i] - 1] = r[i, :max_positions[i]].sum()
@@ -220,7 +221,7 @@ class DataParallelPRIMERewardModel:
         self.reward_optimizer.step()
         return grad_norm
 
-    def prime_norm(self, token_level_scores, acc, eos_mask):
+    def prime_norm(self, token_level_scores, acc, eos_mask, n_samples):
         if self.config.prime_norm == 'batch_norm':
             reverse_cumsum = torch.cumsum(token_level_scores.flip(dims=[1]), dim=-1).flip(dims=[1])
             token_level_scores = token_level_scores / (reverse_cumsum.abs().max() + 1e-6)
@@ -228,6 +229,43 @@ class DataParallelPRIMERewardModel:
             biases = (acc * 2 - 1 - token_level_scores.sum(dim=-1)) / eos_mask.sum(dim=-1)
             token_level_scores += biases.unsqueeze(1)
             token_level_scores[eos_mask == 0] = 0.
+        elif self.config.prime_norm == 'sigmoid':
+            token_level_scores = torch.sigmoid(token_level_scores.cumsum(dim=-1)).diff(dim=-1, prepend=torch.zeros_like(token_level_scores[:,:1])+0.5)
+            token_level_scores[eos_mask == 0] = 0.
+        elif self.config.prime_norm == 'sigmoid_q0': # 因为要sigmoid，需要估计q_0，这里估计方法就是直接使用这个batch的正确率
+        #     prepend_q0 = torch.zeros_like(acc)
+        #     for i in range(0, acc.shape[0], n_samples):
+        #         prepend_q0[i:i+n_samples] = torch.clamp(torch.mean(acc[i:i+n_samples]), 1/n_samples, 1-1/n_samples)
+        #     prepend_q0_raw_score = - torch.log((1/prepend_q0)-1)
+        #
+        #     token_level_scores = torch.sigmoid(token_level_scores.cumsum(dim=-1)+prepend_q0_raw_score.unsqueeze(1)).diff(dim=-1, prepend=prepend_q0.unsqueeze(1))
+        #
+        #     token_level_scores[eos_mask == 0] = 0.
+        # elif self.config.prime_norm == 'sigmoid_q0_acc':
+            # highlight: 其实前面那个做法是不太对的，这个东西的bellman equation不一样，直接取平均肯定错误。最好的warp方法其实是直接要求V_last靠近acc，这样也可以自然地掩盖那些学习错误的trace，同时强化那些学习正确的trace。beta fixed reward大概在0.5-5这个数量级，平均大概-0.5左右，
+            # highlight: 直接做法是先估计好一个Q_0，根据bellman equation来，得到的大概率是个>0.5的数（实际上会很接近1，平均reward本来大概就是-1）。然后把后面的q加上去。最后肯定会遇到一些估计错误的，偏离应有数值太多的，这种的令做修正即可，最后效果一般是直接抹除这个数据点的影响，表明value model难以预测这个回答的value。
+            soft_bound = 0.9 # 需要假设reward不是0-1，否则sigmoid操作无法进行
+            M = - torch.log(1/torch.tensor(soft_bound, device=token_level_scores.device)-1)
+            prepend_q0 = torch.zeros_like(acc)
+            beta = self.config.model.get('beta_test', 0.05)
+            for i in range(0, acc.shape[0], n_samples):
+                cur_acc = acc[i:i+n_samples].mean()
+                prepend_q0[i:i + n_samples] = beta*torch.log(cur_acc*torch.exp(M/beta)+(1-cur_acc)*torch.exp(-M/beta))
+            last_V = token_level_scores.sum(dim=-1)+prepend_q0
+            Q0_reestimation_count=0
+            for i in range(0, acc.shape[0]):
+                if (torch.sigmoid(last_V[i])-0.5)*(acc[i]-0.5)<=0: # 这个Q0估计偏了
+                    V_target = M*(2*acc[i]-1)
+                    prepend_q0[i] = V_target - (last_V[i]-prepend_q0[i])
+                    Q0_reestimation_count += 1
+            token_level_scores = torch.sigmoid(token_level_scores.cumsum(dim=-1) + prepend_q0.unsqueeze(1)).diff(
+            dim=-1, prepend=torch.sigmoid(prepend_q0).unsqueeze(1))
+
+            token_level_scores[eos_mask == 0] = 0.
+
+            Q_reestimation_rate = torch.tensor(Q0_reestimation_count/token_level_scores.shape[0], device = token_level_scores.device)
+
+            print('Q0 re-estimation rate: ', Q_reestimation_rate )
 
         return token_level_scores
 
@@ -241,6 +279,7 @@ class DataParallelPRIMERewardModel:
         batch = data.select(batch_keys=select_keys).batch
         use_dynamic_bsz = data.meta_info['use_dynamic_bsz']
         prompt_length = data.batch['input_ids'].shape[-1] - data.batch['responses'].shape[-1]
+        n_samples = data.meta_info['n']
 
         if use_dynamic_bsz:
             # split using dynamic bsz
@@ -259,7 +298,7 @@ class DataParallelPRIMERewardModel:
         rm_scores = torch.concat(rm_scores_lst, dim=0)
         q = torch.concat(q_lst, dim=0)
 
-        rm_scores = self.prime_norm(rm_scores, batch['acc'], batch['attention_mask'][:, prompt_length:])
+        rm_scores = self.prime_norm(rm_scores, batch['acc'], batch['attention_mask'][:, prompt_length:], n_samples=n_samples)
 
         if use_dynamic_bsz:
             indices = list(itertools.chain.from_iterable(indices))
@@ -279,6 +318,7 @@ class DataParallelPRIMERewardModel:
         metrics = {}
 
         beta = self.config.model.get('beta_train', 0.05)
+        n_samples = data.meta_info['n']
 
         select_keys = [
             'input_ids', 'responses', 'attention_mask', 'position_ids', 'acc', 'prompts', 'ref_log_prob',
@@ -324,8 +364,13 @@ class DataParallelPRIMERewardModel:
                 rm_scores_lst.append(rm_score)
                 q_lst.append(q.detach())
 
+
                 if self.config.model.loss_type == 'ce':
                     dpo_loss = compute_ce_dpo_loss_rm(q, acc, eos_mask=eos_mask, beta=beta)
+                elif self.config.model.loss_type == 'margin_ce':
+                    dpo_loss = compute_margin_ce_dpo_loss_rm(q, acc, eos_mask=eos_mask, beta=beta, gamma=1.0)
+                elif self.config.model.loss_type == 'mse':
+                    dpo_loss = ((q.sum(dim=-1)*beta - acc*2+1)**2).mean()
                 elif self.config.model.loss_type == 'dpo':
                     # the implementation of dpo is actually detached, which means we have to know the average value of w/l reward before the update.
                     dpo_loss = compute_detach_dpo_loss_rm(q,
@@ -364,6 +409,10 @@ class DataParallelPRIMERewardModel:
                 else:
                     loss = dpo_loss / self.gradient_accumulation
 
+                # 默认micro batch size per gpu为1，只要这个micro batch里有超长sample, loss直接清零
+                # if (eos_mask.sum(dim=-1)>eos_mask.shape[1]-5).sum():
+                #     loss*=0
+
                 loss.backward()
 
                 append_to_dict(metrics, data)
@@ -376,7 +425,7 @@ class DataParallelPRIMERewardModel:
         rm_scores = torch.cat(rm_scores_lst, dim=0)
         q = torch.concat(q_lst, dim=0)
 
-        rm_scores = self.prime_norm(rm_scores, batch['acc'], batch['attention_mask'][:, prompt_length:])
+        rm_scores = self.prime_norm(rm_scores, batch['acc'], batch['attention_mask'][:, prompt_length:], n_samples=n_samples)
 
         metrics.update({
             'reward_model/reward': rm_scores.sum(dim=-1).mean().item(),

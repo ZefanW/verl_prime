@@ -16,7 +16,7 @@ fi
 
 echo "running exp on ppo lam ${LAMC} ${LAM} with ${LOSS_TYPE} loss"
 
-PROJECT_NAME='prime-lambda-exp'
+PROJECT_NAME='prime-lambda-exp-final'
 EXPERIMENT_NAME="ppo-${LAMC}-${LAM}-${LOSS_TYPE}-fastrm"
 SFT_MODEL_PATH=/home/wangzefan/huggingface/Qwen2.5-Math-1.5B
 export WANDB_DIR=$WANDB_DIR/wandb_exp/$PROJECT_NAME
@@ -78,5 +78,5 @@ python3 -m verl.trainer.main_ppo \
     trainer.balance_batch=False \
     trainer.save_freq=16 \
     trainer.test_freq=16 \
-    trainer.total_epochs=10 \
+    trainer.total_training_steps=300 \
     trainer.default_local_dir="$CKPT_PATH"/"$PROJECT_NAME"/"$EXPERIMENT_NAME"

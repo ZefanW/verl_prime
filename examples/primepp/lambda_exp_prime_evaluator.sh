@@ -11,7 +11,7 @@ fi
 echo "running exp on prime lam ${LAM}"
 
 PROJECT_NAME='prime-lambda-exp'
-EXPERIMENT_NAME="prime-${LAM}-ce-tll-${REF_TYPE}-fastrm"
+EXPERIMENT_NAME="prime-${LAM}-${REF_TYPE}-q0+"
 SFT_MODEL_PATH=/home/wangzefan/huggingface/Qwen2.5-Math-1.5B
 export WANDB_DIR=$WANDB_DIR/wandb_exp/$PROJECT_NAME
 mkdir -p $WANDB_DIR/wandb
@@ -84,5 +84,5 @@ python3 -m recipe.prime.main_prime \
     trainer.balance_batch=False \
     trainer.save_freq=16 \
     trainer.test_freq=16 \
-    trainer.total_epochs=10 \
+    trainer.total_training_steps=300 \
     trainer.default_local_dir="$CKPT_PATH"/"$PROJECT_NAME"/"$EXPERIMENT_NAME"

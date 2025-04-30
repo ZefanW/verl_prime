@@ -237,10 +237,11 @@ class DataParallelPPOCritic(BasePPOCritic):
                         beta=0.05
                         acc = data['acc'].unsqueeze(1).expand(vpreds.size(0), vpreds.size(1)).to(vpreds.dtype)
                         # vf_loss_last = torch.nn.functional.binary_cross_entropy(last_value_preds.float(), data['acc'])
-                        vf_loss_last = torch.nn.functional.binary_cross_entropy(vpreds[eos_mask == 1], acc[eos_mask == 1])
-                        vf_loss_seq = ((torch.exp(vpreds[eos_mask==1]) - torch.exp(last_value_preds.unsqueeze(1).expand(vpreds.size(0), vpreds.size(1)).to(vpreds.dtype))[eos_mask==1])**2).mean()
-                        vf_loss = vf_loss_last + vf_loss_seq*10
+                        # vf_loss_last = torch.nn.functional.binary_cross_entropy(vpreds[eos_mask == 1], acc[eos_mask == 1])
+                        # vf_loss_seq = ((torch.exp(vpreds[eos_mask==1]) - torch.exp(last_value_preds.unsqueeze(1).expand(vpreds.size(0), vpreds.size(1)).to(vpreds.dtype))[eos_mask==1])**2).mean()
+                        # vf_loss = vf_loss_last + vf_loss_seq*10
                         # vf_loss = (vpreds[eos_mask==1] + beta*torch.exp((acc-vpreds)/beta)[eos_mask==1]).mean()
+                        vf_loss = ((torch.exp(vpreds[eos_mask==1]/0.5) - torch.exp(acc[eos_mask==1]/0.5))**2).mean()
                         vf_clipfrac = torch.zeros_like(vf_loss)
                     elif self.config.critic_loss == 'triple1': # 三次方拟合value
                         beta = 0.05

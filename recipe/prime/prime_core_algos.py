@@ -17,7 +17,7 @@ import verl
 import verl.utils.torch_functional as verl_F
 from verl.trainer.ppo.core_algos import compute_value_model_metrics
 
-def compute_prime_advantage_return(data: verl.DataProto, eos_mask: torch.Tensor, n_samples, config, dpo_acc=0.5):
+def compute_prime_advantage_return(data: verl.DataProto, eos_mask: torch.Tensor, n_samples, config, dpo_acc=0.5, ):
     # 把PRIME的输出当做value model来用，这会有一个partition项需要估计，这里简单处理就直接平均作差完事。
     # 然后再来GAE。可以确保这样做和PRIME等同。
     prompt_ids = data.batch['prompts']
@@ -54,7 +54,35 @@ def compute_prime_advantage_return(data: verl.DataProto, eos_mask: torch.Tensor,
             baseline_score=avg_score+torch.log((1-avg_reward)/avg_reward)
             Q_tensor = torch.sigmoid(Q_tensor-baseline_score)
         else:
-            Q_tensor = torch.sigmoid(Q_tensor)
+            # 先根据正确率估计一个Q_0。如果发现Q_0和最终正确与否的信号差很远（很可能这里PRIME的reward方向都错了），那就把V_last锁定到soft bound，反向推一个Q_0出来
+            # 注意log ratio本身有易负难正的特性，哪怕CE loss也很难克服这一点，可想而知nogt还不rloo就有一大堆负梯度。实验中发现了acc接近0结果reestimation也接近0的现象。需要在理论允许范围内针对性调整下，
+            soft_bound = 0.9 # 需要假设reward不是0-1，否则sigmoid操作无法进行。如果需要warp，一定要注意把CE loss本身也给改掉
+            M = - torch.log(1/torch.tensor(soft_bound, device=Q_tensor.device)-1)
+            prepend_q0 = torch.zeros_like(data.batch['acc'])
+            beta = config.reward_model.model.beta_test
+            for i in range(0, Q_tensor.shape[0], n_samples):
+                cur_acc = data.batch['acc'][i:i+n_samples].mean()
+                prepend_q0[i:i + n_samples] = beta*torch.log(cur_acc*torch.exp(M/beta)+(1-cur_acc)*torch.exp(-M/beta))
+            Q0_reestimation_count = 0
+            for i in range(0, Q_tensor.shape[0]):
+                # if (torch.sigmoid(V_last[i]+prepend_q0[i])-0.5)*(data.batch['acc'][i]-0.5)<=0: # 这个Q0估计偏了
+                if True:
+                    V_target = M*(2*data.batch['acc'][i]-1)
+                    prepend_q0[i] = V_target - V_last[i]
+                    Q0_reestimation_count += 1
+            Q_tensor+=prepend_q0.unsqueeze(1)
+            Q_tensor=torch.sigmoid(Q_tensor)
+
+            print('Q0 re-estimation rate: ', Q0_reestimation_count/Q_tensor.shape[0])
+
+        # highlight: 7B 模型训练时基本上都出现了前期加快后期减慢的情况。为了尽量利用value model优势，主要是assignment方面的优势，这里需要给bias estimation加一重保险。最简单的办法就是，强行把起点和终点拉到0.5-1，如果差值不能做到这一点，就给每个token加一个小量偏差。这个操作实际上就是reward shaping，根据value function把reward分散一下，增加稳定性。
+
+        # Q_tensor_increment = eos_mask.cumsum(dim=-1)
+        # Q_tensor_increment[eos_mask==0]=0
+        # Q_tensor_increment_max = Q_tensor_increment.max(dim=-1)[0]
+        # Q_tensor_bias = data.batch['acc'] - torch.sigmoid(V_last)
+        # Q_tensor += Q_tensor_bias.unsqueeze(-1) / Q_tensor_increment_max.unsqueeze(-1) * Q_tensor_increment
+
 
         Q_tensor[eos_mask==0]=0
         # V(t) = Q(t-1)，V_0应该总是partition，相当于V_value需要把Q整体后移一位才对
@@ -95,6 +123,7 @@ def compute_prime_advantage_return(data: verl.DataProto, eos_mask: torch.Tensor,
 
         returns = advantages + Q_tensor
         advantages = verl_F.masked_whiten(advantages, eos_mask)
+        # advantages = returns
 
         metrics=compute_value_model_metrics(Q_tensor, eos_mask, data.batch['acc'], returns)
 
@@ -140,18 +169,29 @@ def compute_rloo_advantage_return(data: verl.DataProto, eos_mask: torch.Tensor, 
             prompt_length = prompt_ids.shape[-1]
             valid_response_length = data.batch['attention_mask'][:, prompt_length:].sum(-1)
 
+            outcome_reward= data.batch['acc'].clone()
+            coef = config.algorithm.reward_gt_coef
+            if config.algorithm.reward_gt_coef<0: # this means that gt reward is only used to fix numerical errors. it will keep the final reward unchanged.
+                reward_tensor_prime = data.batch['rm_scores']
+                outcome_reward -= reward_tensor_prime.sum(dim=-1)
+                coef = config.algorithm.reward_dpo_coef
+
             reward_mask[
                 torch.arange(0, valid_response_length.shape[0], dtype=torch.long, device=valid_response_length.device),
                 valid_response_length - 1] = True
             reward_tensor[
                 torch.arange(0, valid_response_length.shape[0], dtype=torch.long, device=valid_response_length.device),
-                valid_response_length - 1] = data.batch['acc']
+                valid_response_length - 1] = outcome_reward
 
-            reward_tensors.append(masked_rloo(reward_tensor, reward_mask) * config.algorithm.reward_gt_coef)
+
+
+            reward_tensors.append(masked_rloo(reward_tensor, reward_mask) * coef)
 
         final_reward_tensor = sum(reward_tensors)
 
         returns = (final_reward_tensor * eos_mask).flip(dims=[-1]).cumsum(dim=-1).flip(dims=[-1])
+
+        # returns = reward_tensors[1].flip(dims=[-1]).cumsum(dim=-1).flip(dims=[-1]) + reward_tensors[0]
 
         advantages = returns.clone()
         advantages = verl_F.masked_whiten(advantages, eos_mask)
@@ -164,6 +204,10 @@ def compute_ce_dpo_loss_rm(token_level_scores, acc, eos_mask, beta):
     cur_dpo_loss = torch.nn.functional.binary_cross_entropy(cur_scores, acc)
     return cur_dpo_loss
 
+def compute_margin_ce_dpo_loss_rm(token_level_scores, acc, eos_mask, beta, gamma=1.0):
+    cur_scores = ((token_level_scores * eos_mask).sum(dim=1) * beta - gamma*(acc*2-1)).sigmoid()
+    cur_dpo_loss = torch.nn.functional.binary_cross_entropy(cur_scores, acc)
+    return cur_dpo_loss
 
 def compute_detach_dpo_loss_rm(token_level_scores, acc, Q_bc, acc_bc, eos_mask, beta, bon_mode='none', use_ce=False):
     # we always assume that the BoN size equals n_samples

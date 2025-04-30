@@ -16,23 +16,24 @@ set -x
 # 需要在文件外设置几个全局变量
 
 PROJECT_NAME='data-abla-n4'
-EXPERIMENT_NAME='dapo'
+EXPERIMENT_NAME='dapo-nofilter-nowhiten-online'
 SFT_MODEL_PATH=/home/wangzefan/huggingface/Qwen2.5-Math-7B
 DAPO=/home/wangzefan/dataset/dataset/prime-rl-math-wo-prompt/dapo.parquet
 AIME=/home/wangzefan/dataset/dataset/prime-rl-math-wo-prompt/aime2024_32.parquet
 AMC=/home/wangzefan/dataset/dataset/prime-rl-math-wo-prompt/amc_32.parquet
+DEEPSCALER=/home/wangzefan/dataset/dataset/prime-rl-math-wo-prompt/deepscaler.parquet
 
 export WANDB_DIR=$WANDB_DIR/wandb_exp/$PROJECT_NAME
 mkdir -p $WANDB_DIR/wandb
 
 python3 -m recipe.prime.main_prime \
-    data.train_files="$DAPO" \
-    data.val_files="$AMC" \
+    data.train_files="$DEEPSCALER" \
+    data.val_files="$AIME" \
     data.train_batch_size=64 \
     data.val_batch_size=6312 \
     data.max_prompt_length=1024 \
     data.max_response_length=3072 \
-    data.filter_accuracy=True \
+    data.filter_accuracy=False \
     data.filter_truncate=False \
     data.resample=True \
     data.accuracy_lower_bound=0.05 \
@@ -41,16 +42,16 @@ python3 -m recipe.prime.main_prime \
     actor_rollout_ref.model.path=$SFT_MODEL_PATH \
     actor_rollout_ref.actor.optim.lr=5e-7 \
     actor_rollout_ref.model.use_remove_padding=True \
-    actor_rollout_ref.actor.ppo_mini_batch_size=64 \
+    actor_rollout_ref.actor.ppo_mini_batch_size=256 \
     actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=1 \
-    actor_rollout_ref.model.enable_gradient_checkpointing=True \
+    actor_rollout_ref.model.enable_gradient_checkpointing=False \
     actor_rollout_ref.actor.fsdp_config.param_offload=True \
     actor_rollout_ref.actor.fsdp_config.optimizer_offload=True \
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=32 \
     actor_rollout_ref.rollout.tensor_model_parallel_size=$PARALLEL_SIZE \
     actor_rollout_ref.rollout.name=vllm \
     actor_rollout_ref.rollout.n=4 \
-    actor_rollout_ref.rollout.gpu_memory_utilization=0.6 \
+    actor_rollout_ref.rollout.gpu_memory_utilization=0.8 \
     actor_rollout_ref.rollout.max_seq_len_to_capture=4096 \
     actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=32 \
     actor_rollout_ref.actor.ulysses_sequence_parallel_size=$PARALLEL_SIZE \
@@ -58,6 +59,7 @@ python3 -m recipe.prime.main_prime \
     algorithm.reward_gt_coef=5 \
     algorithm.reward_dpo_coef=5 \
     reward_model.model.path=$SFT_MODEL_PATH \
+    reward_model.model.ref_path=$SFT_MODEL_PATH \
     reward_model.micro_batch_size_per_gpu=1 \
     reward_model.model.update=before \
     reward_model.model.beta_train=0.05 \
@@ -66,6 +68,8 @@ python3 -m recipe.prime.main_prime \
     reward_model.model.input_tokenizer=null \
     reward_model.mini_batch_size=64 \
     reward_model.ulysses_sequence_parallel_size=$PARALLEL_SIZE \
+    reward_model.model.loss_type=ce \
+    reward_model.prime_norm=batch_norm \
     trainer.val_before_train=False \
     trainer.logger=['console','wandb'] \
     trainer.project_name=$PROJECT_NAME \
