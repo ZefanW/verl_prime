@@ -15,7 +15,8 @@ fi
 
 
 PROJECT_NAME='deepscaler1.5b'
-EXPERIMENT_NAME="ppo-${LOSS_TYPE}-${LAMC}-${LAM}"
+#EXPERIMENT_NAME="ppo-${LOSS_TYPE}-${LAMC}-${LAM}"
+EXPERIMENT_NAME="grpo-stable"
 SFT_MODEL_PATH=/home/wangzefan/huggingface/DeepSeek-R1-Distill-Qwen-1.5B
 DEEPSCALER=/home/wangzefan/dataset/dataset/prime-rl-math-wo-prompt/deepscaler.parquet
 AIME=/home/wangzefan/dataset/dataset/prime-rl-math-wo-prompt/aime2024_32.parquet
@@ -55,7 +56,7 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.temperature=0.6 \
     actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=8 \
     actor_rollout_ref.actor.ulysses_sequence_parallel_size=$PARALLEL_SIZE \
-    algorithm.adv_estimator=gae \
+    algorithm.adv_estimator=grpo \
     algorithm.kl_ctrl.kl_coef=0. \
     algorithm.lam_critic=$LAMC \
     algorithm.lam=$LAM \

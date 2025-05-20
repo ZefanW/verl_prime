@@ -10,8 +10,8 @@ fi
 
 echo "running exp on prime lam ${LAM}"
 
-PROJECT_NAME='prime-lambda-exp'
-EXPERIMENT_NAME="prime-${LAM}-${REF_TYPE}-q0+"
+PROJECT_NAME='prime-lambda-exp-final'
+EXPERIMENT_NAME="prime-${LAM}-${REF_TYPE}-q0+-negativebeta"
 SFT_MODEL_PATH=/home/wangzefan/huggingface/Qwen2.5-Math-1.5B
 export WANDB_DIR=$WANDB_DIR/wandb_exp/$PROJECT_NAME
 mkdir -p $WANDB_DIR/wandb
@@ -58,7 +58,8 @@ python3 -m recipe.prime.main_prime \
     algorithm.reward_dpo_coef=5 \
     reward_model.model.path=$SFT_MODEL_PATH \
     reward_model.micro_batch_size_per_gpu=1 \
-    reward_model.model.beta_train=0.05 \
+    reward_model.model.beta_train=-0.05 \
+    reward_model.model.beta_test=-0.05 \
     reward_model.model.optim.lr=1e-6 \
     reward_model.model.optim.grad_clip=10.0 \
     reward_model.model.input_tokenizer=null \

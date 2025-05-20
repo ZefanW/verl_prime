@@ -56,24 +56,33 @@ def compute_prime_advantage_return(data: verl.DataProto, eos_mask: torch.Tensor,
         else:
             # 先根据正确率估计一个Q_0。如果发现Q_0和最终正确与否的信号差很远（很可能这里PRIME的reward方向都错了），那就把V_last锁定到soft bound，反向推一个Q_0出来
             # 注意log ratio本身有易负难正的特性，哪怕CE loss也很难克服这一点，可想而知nogt还不rloo就有一大堆负梯度。实验中发现了acc接近0结果reestimation也接近0的现象。需要在理论允许范围内针对性调整下，
-            soft_bound = 0.9 # 需要假设reward不是0-1，否则sigmoid操作无法进行。如果需要warp，一定要注意把CE loss本身也给改掉
+            soft_bound = 0.99 # 需要假设reward不是0-1，否则sigmoid操作无法进行。如果需要warp，一定要注意把CE loss本身也给改掉
             M = - torch.log(1/torch.tensor(soft_bound, device=Q_tensor.device)-1)
             prepend_q0 = torch.zeros_like(data.batch['acc'])
             beta = config.reward_model.model.beta_test
-            for i in range(0, Q_tensor.shape[0], n_samples):
-                cur_acc = data.batch['acc'][i:i+n_samples].mean()
-                prepend_q0[i:i + n_samples] = beta*torch.log(cur_acc*torch.exp(M/beta)+(1-cur_acc)*torch.exp(-M/beta))
-            Q0_reestimation_count = 0
-            for i in range(0, Q_tensor.shape[0]):
-                # if (torch.sigmoid(V_last[i]+prepend_q0[i])-0.5)*(data.batch['acc'][i]-0.5)<=0: # 这个Q0估计偏了
-                if True:
-                    V_target = M*(2*data.batch['acc'][i]-1)
-                    prepend_q0[i] = V_target - V_last[i]
-                    Q0_reestimation_count += 1
+
+            if config.algorithm.q0_estimator == 'soft':
+                for i in range(0, Q_tensor.shape[0]):
+                    # if (torch.sigmoid(V_last[i]+prepend_q0[i])-0.5)*(data.batch['acc'][i]-0.5)<=0: # 这个Q0估计偏了
+                    if True:
+                        V_target = M * (2 * data.batch['acc'][i] - 1)
+                        prepend_q0[i] = V_target - V_last[i]
+                        data.batch['acc'][i] = torch.sigmoid(
+                            V_target)  # 理论上就该是这样，不要再保留一个小的负advantage，policy model已经可以高概率采样为正的就不用强化了
+            elif config.algorithm.q0_estimator == 'mcts':
+                # 根据rollout结果猜测一个q0，大体表示一个概率估计。由于bellman equation的存在。由于正常来讲只要回答里面有正的，value都会非常凸，所以这其实和设置一个大整数为baseline差别很小很小...
+                if beta>0:
+                    prepend_q0[:]=M
+                else:
+                    prepend_q0[:]=-M
+
+            elif config.algorithm.q0_estimator == 'none':
+                pass
+
             Q_tensor+=prepend_q0.unsqueeze(1)
             Q_tensor=torch.sigmoid(Q_tensor)
 
-            print('Q0 re-estimation rate: ', Q0_reestimation_count/Q_tensor.shape[0])
+            # print('Q0 re-estimation rate: ', Q0_reestimation_count/Q_tensor.shape[0])
 
         # highlight: 7B 模型训练时基本上都出现了前期加快后期减慢的情况。为了尽量利用value model优势，主要是assignment方面的优势，这里需要给bias estimation加一重保险。最简单的办法就是，强行把起点和终点拉到0.5-1，如果差值不能做到这一点，就给每个token加一个小量偏差。这个操作实际上就是reward shaping，根据value function把reward分散一下，增加稳定性。
 
@@ -124,6 +133,121 @@ def compute_prime_advantage_return(data: verl.DataProto, eos_mask: torch.Tensor,
         returns = advantages + Q_tensor
         advantages = verl_F.masked_whiten(advantages, eos_mask)
         # advantages = returns
+
+        metrics=compute_value_model_metrics(Q_tensor, eos_mask, data.batch['acc'], returns)
+
+    return advantages, returns, metrics
+
+def compute_prime_value_advantage_return(data: verl.DataProto, eos_mask: torch.Tensor, n_samples, config):
+    # 从还原PRIME开始逐步修改value model. 首先把batch norm操作全部复现一遍，至少允许设置lambda，然后再逐步调整。
+    # 需要小心：value mask需要多留一位? 正常critic的mask会多保留一位，保留的一位是last token输入并生成eos的这一步，并且数值没有被锁死到0，虽然理应模型可以快速习得eos token并将它设为0。r_t实际上是生成last token时给出的，并非生成eos时给出，这一点很容易想明白，如果生成长度为1那么reward在位置0。生成eos token的advantage一般就是0，RL并不会直接导致eos token的生成概率崩溃。
+    prompt_ids = data.batch['prompts']
+    prompt_length = prompt_ids.shape[-1]
+    valid_response_length = data.batch['attention_mask'][:, prompt_length:].sum(-1)
+    gamma=1
+    lam=config.algorithm.lam
+
+
+    with torch.no_grad():
+        assert 'rm_scores' in data.batch.keys() and 'acc' in data.batch.keys()
+        q_tensor = data.batch['rm_scores']
+        q_tensor[eos_mask==0]=0
+        V_last = q_tensor.sum(dim=-1)
+        Q_tensor = q_tensor.cumsum(dim=-1)
+        Q_tensor[:,1:]=q_tensor[:,:-1]
+        Q_tensor[:,0]=0
+
+        # normalize like prime，说实话这个norm怪怪的，不是按照value在norm而是按照dpo reward-value
+        # Q_tensor/= (V_last.abs().max()+ 1e-6)
+        reverse_cumsum = torch.cumsum(q_tensor.flip(dims=[1]), dim=-1)
+        Q_tensor/= (reverse_cumsum.abs().max() + 1e-6)
+
+        # set Q0 like prime
+        Q_tensor+=(data.batch['acc']-V_last).unsqueeze(-1)
+        Q_tensor[eos_mask==0]=0
+
+        # calculate advantage of prime with lambda
+        token_level_rewards=torch.zeros_like(q_tensor)
+        token_level_rewards[
+            torch.arange(0, valid_response_length.shape[0], dtype=torch.long, device=valid_response_length.device),
+            valid_response_length - 1] = data.batch['acc']
+
+        lastgaelam = 0
+        advantages_reversed = []
+        gen_len = q_tensor.shape[1]
+
+        for t in reversed(range(gen_len)):
+            nextvalues = Q_tensor[:, t + 1] if t < gen_len - 1 else 0.0
+            delta = token_level_rewards[:, t] + gamma * nextvalues - Q_tensor[:, t] #
+            lastgaelam = delta + gamma * lam * lastgaelam
+            advantages_reversed.append(lastgaelam)
+        advantages = torch.stack(advantages_reversed[::-1], dim=1)
+        returns = advantages + Q_tensor
+
+        # calculate advantage from acc reward
+        advantages_acc = eos_mask*data.batch['acc'].unsqueeze(-1)
+
+        # combine advantages
+        advantages = verl_F.masked_whiten(advantages*config.algorithm.reward_dpo_coef + advantages_acc*config.algorithm.reward_gt_coef, eos_mask)
+
+        metrics=compute_value_model_metrics(Q_tensor, eos_mask, data.batch['acc'], returns)
+
+    return advantages, returns, metrics
+
+def compute_reasonable_prime_value_advantage_return(data: verl.DataProto, eos_mask: torch.Tensor, n_samples, config):
+    # 假定loss是DPO loss(CE loss也没法扭转DPO loss的固有问题），
+    prompt_ids = data.batch['prompts']
+    prompt_length = prompt_ids.shape[-1]
+    valid_response_length = data.batch['attention_mask'][:, prompt_length:].sum(-1)
+    gamma=1
+    lam=config.algorithm.lam
+
+
+    with torch.no_grad():
+        assert 'rm_scores' in data.batch.keys() and 'acc' in data.batch.keys()
+        q_tensor = data.batch['rm_scores']
+        q_tensor[eos_mask==0]=0
+        V_last = q_tensor.sum(dim=-1)
+        Q_tensor = q_tensor.cumsum(dim=-1)
+        Q_tensor[:,1:]=q_tensor[:,:-1]
+        Q_tensor[:,0]=0
+
+        for i in range(0, Q_tensor.shape[0],n_samples):
+            # estimate winrate for each prompt
+            # win_rate_last = torch.sigmoid(V_last.unsqueeze(-1)-V_last.unsqueeze(0)).mean(dim=-1)
+            win_rate_all = torch.sigmoid(Q_tensor[i:i+n_samples].unsqueeze(-1) - V_last[i:i+n_samples].unsqueeze(0).unsqueeze(0)).mean(dim=-1)
+            global_acc = data.batch['acc'][i:i+n_samples].mean()
+            # estimate_acc = 2*win_rate_all + global_acc - 1
+            # estimate_acc是可能超出0-1的，不过可以优先试试不clip会发生什么
+            # 另一种可行的定义方式：
+            estimate_acc = (global_acc*win_rate_all)/(global_acc*win_rate_all+(1-global_acc)*(1-win_rate_all))
+            Q_tensor[i:i+n_samples] = estimate_acc
+
+        Q_tensor[eos_mask==0]=0
+
+        # calculate advantage of prime with lambda
+        token_level_rewards=torch.zeros_like(q_tensor)
+        token_level_rewards[
+            torch.arange(0, valid_response_length.shape[0], dtype=torch.long, device=valid_response_length.device),
+            valid_response_length - 1] = data.batch['acc']
+
+        lastgaelam = 0
+        advantages_reversed = []
+        gen_len = q_tensor.shape[1]
+
+        for t in reversed(range(gen_len)):
+            nextvalues = Q_tensor[:, t + 1] if t < gen_len - 1 else 0.0
+            delta = token_level_rewards[:, t] + gamma * nextvalues - Q_tensor[:, t] #
+            lastgaelam = delta + gamma * lam * lastgaelam
+            advantages_reversed.append(lastgaelam)
+        advantages = torch.stack(advantages_reversed[::-1], dim=1)
+        returns = advantages + Q_tensor
+
+        # calculate advantage from acc reward
+        advantages_acc = eos_mask*data.batch['acc'].unsqueeze(-1)
+
+        # combine advantages
+        advantages = verl_F.masked_whiten(advantages*config.algorithm.reward_dpo_coef + advantages_acc*config.algorithm.reward_gt_coef, eos_mask)
 
         metrics=compute_value_model_metrics(Q_tensor, eos_mask, data.batch['acc'], returns)
 

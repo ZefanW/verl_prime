@@ -307,6 +307,23 @@ def compute_policy_loss(old_log_prob, log_prob, advantages, eos_mask, clipranges
     pg_clipfrac = verl_F.masked_mean(torch.gt(pg_losses2, pg_losses).float(), eos_mask)
     return pg_loss, pg_clipfrac, ppo_kl
 
+def compute_policy_loss_adaptive(old_log_prob, log_prob, advantages, eos_mask, clipranges):
+    negative_approx_kl = log_prob - old_log_prob
+    ratio = torch.exp(negative_approx_kl)
+    ppo_kl = verl_F.masked_mean(-negative_approx_kl, eos_mask)
+
+    pg_losses = -advantages * ratio
+    # the adaptive clamp operation: the clip range for higher bound is defined by the old_prob. in brief, the range is torch.clamp(0.9/pi_old-1, 1e-3, cliprange[0])
+    upper_bound = torch.clamp(0.9/torch.exp(old_log_prob)-1, 1e-3, clipranges[0])
+    ratio_clamp = torch.minimum(torch.clamp(ratio, 1.0-clipranges[0]), 1+upper_bound)
+
+    pg_losses2 = -advantages * ratio_clamp
+
+    # pg_losses2 = -advantages * torch.clamp(ratio, 1.0 - clipranges[0], 1.0 + clipranges[1])
+
+    pg_loss = verl_F.masked_mean(torch.max(pg_losses, pg_losses2), eos_mask)
+    pg_clipfrac = verl_F.masked_mean(torch.gt(pg_losses2, pg_losses).float(), eos_mask)
+    return pg_loss, pg_clipfrac, ppo_kl
 
 def compute_entropy_loss(logits, eos_mask):
     """Compute Categorical entropy loss

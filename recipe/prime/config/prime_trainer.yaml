@@ -25,6 +25,7 @@ actor_rollout_ref:
   rollout:
     # number of responses (i.e. num sample times)
     n: 4
+    force_think: False
   actor:
     entropy_coeff: 0.000
     use_token_level_loss: False
@@ -62,6 +63,7 @@ reward_model:
     beta_double: null
     beta_test: 0.05 # 求value的时候用这个，求loss的时候用beta_train
     loss_type: ce # currently only supports ce loss
+    truncate: False # 是否需要在训练中移除超长样本
   prime_granularity: token
   prime_norm: batch_norm # batch_norm or none. if set to none, the normalizer is beta_train
   mini_batch_size: ${actor_rollout_ref.actor.ppo_mini_batch_size}
@@ -77,6 +79,8 @@ algorithm:
     kl_coef: 0.000
   reward_gt_coef: 5
   reward_dpo_coef: 5
+  q0_estimator: soft
+  warmup: False
 
 trainer:
   project_name: prime

@@ -81,6 +81,26 @@ def compute_advantage(data: DataProto, adv_estimator, config, dpo_acc=0.5):
         data.batch['advantages'] = advantages
         data.batch['returns'] = returns
         data.meta_info['adv_metrics'] = metrics
+    elif adv_estimator == 'prime_value':
+        responses = data.batch['responses']
+        response_length = responses.size(-1)
+        attention_mask = data.batch['attention_mask']
+        response_mask = attention_mask[:, -response_length:]
+        advantages, returns, metrics = prime_core_algos.compute_prime_value_advantage_return(data, response_mask,
+                                                                             config.actor_rollout_ref.rollout.n, config, )
+        data.batch['advantages'] = advantages
+        data.batch['returns'] = returns
+        data.meta_info['adv_metrics'] = metrics
+    elif adv_estimator == 'prime_value_ce':
+        responses = data.batch['responses']
+        response_length = responses.size(-1)
+        attention_mask = data.batch['attention_mask']
+        response_mask = attention_mask[:, -response_length:]
+        advantages, returns, metrics = prime_core_algos.compute_reasonable_prime_value_advantage_return(data, response_mask,
+                                                                             config.actor_rollout_ref.rollout.n, config, )
+        data.batch['advantages'] = advantages
+        data.batch['returns'] = returns
+        data.meta_info['adv_metrics'] = metrics
     else:
         raise NotImplementedError
     return data
@@ -541,11 +561,25 @@ class RayPRIMETrainer(RayPPOTrainer):
                         metrics.update(
                             {'reward_model/td0_loss': compute_return_smoothness(batch.batch['returns']).item()})
 
-                    # update actor
-                    with _timer('update_actor', timing_raw):
-                        actor_output = self.actor_rollout_wg.update_actor(batch)
-                    actor_output_metrics = reduce_metrics(actor_output.meta_info['metrics'])
-                    metrics.update(actor_output_metrics)
+                    # update actor. if warmup is toggled on, skip this istep
+                    if self.config.algorithm.get('warmup',False) == False:
+                        with _timer('update_actor', timing_raw):
+                            # ppo epoch的逻辑放在这
+                            ppo_epoch=0
+                            while True:
+                                if self.config.actor_rollout_ref.actor.ppo_epochs>=1 and ppo_epoch>=self.config.actor_rollout_ref.actor.ppo_epochs:
+                                    break
+                                ppo_epoch+=1
+                                actor_output = self.actor_rollout_wg.update_actor(batch)
+                                actor_output_metrics = reduce_metrics(actor_output.meta_info['metrics'])
+                                # 如果不是ppo_epoch不是整数，当ppo_kl>=这个数值时才允许退出。
+                                if self.config.actor_rollout_ref.actor.ppo_epochs<1 and actor_output_metrics['actor/ppo_kl']>=self.config.actor_rollout_ref.actor.ppo_epochs:
+                                    break
+                                # 最多允许跑4epoch
+                                if ppo_epoch>=4:
+                                    break
+                        metrics.update(actor_output_metrics)
+                        metrics['ppo_epoch']=ppo_epoch
 
                     # validate
                     if self.val_reward_fn is not None and self.config.trainer.test_freq > 0 and \

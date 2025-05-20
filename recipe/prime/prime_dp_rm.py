@@ -87,6 +87,8 @@ class DataParallelPRIMERewardModel:
                                                   position_ids=position_ids_rmpad,
                                                   use_cache=False).logits.squeeze(
                                                       0)  # copied. I don't really know why there is a squeeze
+            if self.config.model.ref_type == 'policy2':
+                rm_output_logits = rm_output_logits / 2
             rm_log_labels = verl_F.logprobs_from_logits(logits=rm_output_logits, labels=input_ids_rmpad_rolled)
             if self.ulysses_sequence_parallel_size > 1:
                 rm_log_labels = gather_outpus_and_unpad(rm_log_labels, gather_dim=0, unpad_dim=0, padding_size=pad_size)
@@ -99,38 +101,42 @@ class DataParallelPRIMERewardModel:
             rm_output_logits = self.reward_module(input_ids=micro_batch['input_ids'],
                                                   attention_mask=micro_batch['attention_mask'],
                                                   position_ids=micro_batch['position_ids']).logits
+            if self.config.model.ref_type == 'policy2':
+                rm_output_logits = rm_output_logits / 2
             rm_log_prob = torch.nn.functional.log_softmax(rm_output_logits[:, :-1, :],
                                                           dim=-1)  # (batch_size, seq_length, vocab_size)
             rm_log_labels = rm_log_prob.gather(dim=-1, index=micro_batch['input_ids'][:, 1:].unsqueeze(-1)).squeeze(
                 -1)  # (batch, seq_length)
         #
-        # if self.ref_module is not None:
-        #     # do not have to pad again
-        #     with torch.no_grad(), torch.autocast(device_type='cuda', dtype=torch.bfloat16):
-        #         if self.ulysses_sequence_parallel_size > 1 and self.use_remove_padding:
-        #             ref_output_logits = self.ref_module(input_ids=input_ids_rmpad,
-        #                                                 attention_mask=None,
-        #                                                 position_ids=position_ids_rmpad,
-        #                                                 use_cache=False).logits.squeeze(0)
-        #             ref_log_labels = verl_F.logprobs_from_logits(logits=ref_output_logits,
-        #                                                          labels=input_ids_rmpad_rolled)
-        #             ref_log_labels = gather_outpus_and_unpad(ref_log_labels,
-        #                                                      gather_dim=0,
-        #                                                      unpad_dim=0,
-        #                                                      padding_size=pad_size)
-        #             ref_log_labels = pad_input(hidden_states=ref_log_labels.unsqueeze(-1),
-        #                                        indices=indices,
-        #                                        batch=batch_size,
-        #                                        seqlen=seqlen).squeeze(-1)[:, -num_actions - 1:-1]
-        #         else:
-        #             ref_output_logits = self.ref_module(input_ids=micro_batch['input_ids'],
-        #                                                 attention_mask=micro_batch['attention_mask'],
-        #                                                 position_ids=micro_batch['position_ids']).logits
-        #             ref_log_prob = torch.nn.functional.log_softmax(ref_output_logits[:, :-1, :],
-        #                                                            dim=-1)  # (batch_size, seq_length, vocab_size)
-        #             ref_log_labels = ref_log_prob.gather(dim=-1,
-        #                                                  index=micro_batch['input_ids'][:, 1:].unsqueeze(-1)).squeeze(
-        #                                                      -1)  # (batch, seq_length)
+        if self.ref_module is not None and self.config.model.ref_type == 'policy2':
+            # do not have to pad again
+            with torch.no_grad(), torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+                if self.ulysses_sequence_parallel_size > 1 and self.use_remove_padding:
+                    ref_output_logits = self.ref_module(input_ids=input_ids_rmpad,
+                                                        attention_mask=None,
+                                                        position_ids=position_ids_rmpad,
+                                                        use_cache=False).logits.squeeze(0)
+                    ref_output_logits/=2
+                    ref_log_labels = verl_F.logprobs_from_logits(logits=ref_output_logits,
+                                                                 labels=input_ids_rmpad_rolled)
+                    ref_log_labels = gather_outpus_and_unpad(ref_log_labels,
+                                                             gather_dim=0,
+                                                             unpad_dim=0,
+                                                             padding_size=pad_size)
+                    ref_log_labels = pad_input(hidden_states=ref_log_labels.unsqueeze(-1),
+                                               indices=indices,
+                                               batch=batch_size,
+                                               seqlen=seqlen).squeeze(-1)[:, -num_actions - 1:-1]
+                else:
+                    ref_output_logits = self.ref_module(input_ids=micro_batch['input_ids'],
+                                                        attention_mask=micro_batch['attention_mask'],
+                                                        position_ids=micro_batch['position_ids'],use_cache=False).logits
+                    ref_output_logits/=2
+                    ref_log_prob = torch.nn.functional.log_softmax(ref_output_logits[:, :-1, :],
+                                                                   dim=-1)  # (batch_size, seq_length, vocab_size)
+                    ref_log_labels = ref_log_prob.gather(dim=-1,
+                                                         index=micro_batch['input_ids'][:, 1:].unsqueeze(-1)).squeeze(
+                                                             -1)  # (batch, seq_length)
         # else:
         #     ref_log_labels = micro_batch['old_log_probs']
 
@@ -138,6 +144,10 @@ class DataParallelPRIMERewardModel:
             ref_log_labels = micro_batch['ref_log_prob']
         elif self.config.model.ref_type == 'policy':
             ref_log_labels = micro_batch['old_log_probs']
+        elif self.config.model.ref_type == 'policy2':
+            pass
+            # rm_log_labels = torch.log_softmax(rm_log_labels / 2, dim=-1)
+            # ref_log_labels = micro_batch['old_log_probs_2']
         elif self.config.model.ref_type == '2policy-freeze':
             ref_log_labels = 2 * micro_batch['old_log_probs'] - micro_batch['ref_log_prob']
         elif self.config.model.ref_type == 'policy+freeze':
@@ -154,7 +164,7 @@ class DataParallelPRIMERewardModel:
         ref_log_labels.to(rm_log_labels.dtype)
         q = rm_log_labels[:, -num_actions:] - ref_log_labels[:, -num_actions:]  # this is actually diff of q
 
-        # trim unnecessary logprobs here
+        # trim unnecessary logprobs here。注意这一步eos token也会被trim掉
         for i in range(micro_batch['input_ids'].shape[0]):
             q[i, max_positions[i]:] = 0
 
@@ -218,7 +228,8 @@ class DataParallelPRIMERewardModel:
         else:
             grad_norm = torch.nn.utils.clip_grad_norm_(self.reward_module.parameters(),
                                                        max_norm=self.config.model.optim.grad_clip)
-        self.reward_optimizer.step()
+        if ~torch.isnan(grad_norm):
+            self.reward_optimizer.step()
         return grad_norm
 
     def prime_norm(self, token_level_scores, acc, eos_mask, n_samples):
@@ -410,8 +421,9 @@ class DataParallelPRIMERewardModel:
                     loss = dpo_loss / self.gradient_accumulation
 
                 # 默认micro batch size per gpu为1，只要这个micro batch里有超长sample, loss直接清零
-                # if (eos_mask.sum(dim=-1)>eos_mask.shape[1]-5).sum():
-                #     loss*=0
+                if self.config.model.truncate:
+                    if (eos_mask.sum(dim=-1)>eos_mask.shape[1]-5).sum():
+                        loss*=0
 
                 loss.backward()
 

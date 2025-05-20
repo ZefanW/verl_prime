@@ -162,7 +162,8 @@ class DataParallelPPOActor(BasePPOActor):
             grad_norm = self.actor_module.clip_grad_norm_(max_norm=self.config.grad_clip)
         else:
             grad_norm = torch.nn.utils.clip_grad_norm_(self.actor_module.parameters(), max_norm=self.config.grad_clip)
-        self.actor_optimizer.step()
+        if ~torch.isnan(grad_norm):
+            self.actor_optimizer.step()
         return grad_norm
 
     def compute_log_prob(self, data: DataProto) -> torch.Tensor:
@@ -247,89 +248,97 @@ class DataParallelPPOActor(BasePPOActor):
             dataloader = batch.split(self.config.ppo_mini_batch_size)
 
         metrics = {}
-        for epoch in range(self.config.ppo_epochs):
-            for batch_idx, data in enumerate(dataloader):
+
+        for batch_idx, data in enumerate(dataloader):
+            # split batch into micro_batches
+            mini_batch = data
+            if has_multi_modal_inputs:
+                self.gradient_accumulation = self.config.ppo_mini_batch_size // self.config.ppo_micro_batch_size_per_gpu
+                num_micro_batches = mini_batch.batch.batch_size[0] // self.config.ppo_micro_batch_size_per_gpu
+                micro_batches = data.select(select_keys, non_tensor_select_keys).chunk(num_micro_batches)
+            elif self.config.use_dynamic_bsz:
+                max_token_len = self.config.ppo_max_token_len_per_gpu * self.ulysses_sequence_parallel_size
+                micro_batches, _ = rearrange_micro_batches(batch=mini_batch, max_token_len=max_token_len)
+            else:
+                self.gradient_accumulation = self.config.ppo_mini_batch_size // self.config.ppo_micro_batch_size_per_gpu
                 # split batch into micro_batches
-                mini_batch = data
-                if has_multi_modal_inputs:
-                    self.gradient_accumulation = self.config.ppo_mini_batch_size // self.config.ppo_micro_batch_size_per_gpu
-                    num_micro_batches = mini_batch.batch.batch_size[0] // self.config.ppo_micro_batch_size_per_gpu
-                    micro_batches = data.select(select_keys, non_tensor_select_keys).chunk(num_micro_batches)
-                elif self.config.use_dynamic_bsz:
-                    max_token_len = self.config.ppo_max_token_len_per_gpu * self.ulysses_sequence_parallel_size
-                    micro_batches, _ = rearrange_micro_batches(batch=mini_batch, max_token_len=max_token_len)
+                micro_batches = mini_batch.split(self.config.ppo_micro_batch_size_per_gpu)
+
+            self.actor_optimizer.zero_grad()
+
+            for data in micro_batches:
+                # Support all hardwares
+                if isinstance(data, DataProto):
+                    data = {**data.batch.to(torch.cuda.current_device()), **data.non_tensor_batch}
                 else:
-                    self.gradient_accumulation = self.config.ppo_mini_batch_size // self.config.ppo_micro_batch_size_per_gpu
-                    # split batch into micro_batches
-                    micro_batches = mini_batch.split(self.config.ppo_micro_batch_size_per_gpu)
+                    data = data.to(torch.cuda.current_device())  # actor device is cpu when using offload
+                responses = data['responses']
+                response_length = responses.size(1)
+                attention_mask = data['attention_mask']
+                response_mask = attention_mask[:, -response_length:]
+                old_log_prob = data['old_log_probs']
+                advantages = data['advantages']
 
-                self.actor_optimizer.zero_grad()
-
-                for data in micro_batches:
-                    # Support all hardwares
-                    if isinstance(data, DataProto):
-                        data = {**data.batch.to(torch.cuda.current_device()), **data.non_tensor_batch}
-                    else:
-                        data = data.to(torch.cuda.current_device())  # actor device is cpu when using offload
-                    responses = data['responses']
-                    response_length = responses.size(1)
-                    attention_mask = data['attention_mask']
-                    response_mask = attention_mask[:, -response_length:]
-                    old_log_prob = data['old_log_probs']
-                    advantages = data['advantages']
-
-                    clip_ratios = [self.config.clip_ratio, self.config.clip_ratio]
-                    if self.config.get('clip_high', None) is not None:
+                clip_ratios = [self.config.clip_ratio, self.config.clip_ratio]
+                if self.config.get('clip_high', None) is not None:
+                    # 一种特殊clip策略，要求概率超过0.9就不允许进一步优化
                         clip_ratios[1] = self.config.clip_high
-                    entropy_coeff = self.config.entropy_coeff
+                entropy_coeff = self.config.entropy_coeff
 
-                    # all return: (bsz, response_length)
-                    entropy, log_prob = self._forward_micro_batch(micro_batch=data, temperature=temperature)
+                # all return: (bsz, response_length)
+                entropy, log_prob = self._forward_micro_batch(micro_batch=data, temperature=temperature)
 
+                if self.config.get('clip_high', None)=='adaptive_bound':
+                    pg_loss, pg_clipfrac, ppo_kl = core_algos.compute_policy_loss_adaptive(old_log_prob=old_log_prob,
+                                                                              log_prob=log_prob,
+                                                                              advantages=advantages,
+                                                                              eos_mask=response_mask,
+                                                                              clipranges=clip_ratios)
+                else:
                     pg_loss, pg_clipfrac, ppo_kl = core_algos.compute_policy_loss(old_log_prob=old_log_prob,
                                                                                   log_prob=log_prob,
                                                                                   advantages=advantages,
                                                                                   eos_mask=response_mask,
                                                                                   clipranges=clip_ratios)
-                    # compute entropy loss from entropy
-                    entropy_loss = verl_F.masked_mean(entropy, response_mask)
+                # compute entropy loss from entropy
+                entropy_loss = verl_F.masked_mean(entropy, response_mask)
 
-                    # compute policy loss
-                    policy_loss = pg_loss - entropy_loss * entropy_coeff
+                # compute policy loss
+                policy_loss = pg_loss - entropy_loss * entropy_coeff
 
-                    if self.config.use_kl_loss:
-                        ref_log_prob = data['ref_log_prob']
-                        # compute kl loss
-                        kld = core_algos.kl_penalty(logprob=log_prob,
-                                                    ref_logprob=ref_log_prob,
-                                                    kl_penalty=self.config.kl_loss_type)
-                        kl_loss = masked_mean(kld, response_mask)
+                if self.config.use_kl_loss:
+                    ref_log_prob = data['ref_log_prob']
+                    # compute kl loss
+                    kld = core_algos.kl_penalty(logprob=log_prob,
+                                                ref_logprob=ref_log_prob,
+                                                kl_penalty=self.config.kl_loss_type)
+                    kl_loss = masked_mean(kld, response_mask)
 
-                        policy_loss = policy_loss + kl_loss * self.config.kl_loss_coef
-                        metrics['actor/kl_loss'] = kl_loss.detach().item()
-                        metrics['actor/kl_coef'] = self.config.kl_loss_coef
+                    policy_loss = policy_loss + kl_loss * self.config.kl_loss_coef
+                    metrics['actor/kl_loss'] = kl_loss.detach().item()
+                    metrics['actor/kl_coef'] = self.config.kl_loss_coef
 
-                    if self.config.use_dynamic_bsz:
-                        # relative to the dynamic bsz
-                        loss = policy_loss * (len(data) / self.config.ppo_mini_batch_size)
-                    else:
-                        loss = policy_loss / self.gradient_accumulation
-                    if self.config.get('use_token_level_loss', False):
-                        # 消除gradient accu会导致的过度重视短文本问题
-                        loss = loss / avg_response_length * attention_mask[:, -response_length:].sum(-1).float().mean()
+                if self.config.use_dynamic_bsz:
+                    # relative to the dynamic bsz
+                    loss = policy_loss * (len(data) / self.config.ppo_mini_batch_size)
+                else:
+                    loss = policy_loss / self.gradient_accumulation
+                if self.config.get('use_token_level_loss', False):
+                    # 消除gradient accu会导致的过度重视短文本问题
+                    loss = loss / avg_response_length * attention_mask[:, -response_length:].sum(-1).float().mean()
 
-                    loss.backward()
+                loss.backward()
 
-                    data = {
-                        'actor/entropy_loss': entropy_loss.detach().item(),
-                        'actor/pg_loss': pg_loss.detach().item(),
-                        'actor/pg_clipfrac': pg_clipfrac.detach().item(),
-                        'actor/ppo_kl': ppo_kl.detach().item(),
-                    }
-                    append_to_dict(metrics, data)
+                data = {
+                    'actor/entropy_loss': entropy_loss.detach().item(),
+                    'actor/pg_loss': pg_loss.detach().item(),
+                    'actor/pg_clipfrac': pg_clipfrac.detach().item(),
+                    'actor/ppo_kl': ppo_kl.detach().item(),
+                }
+                append_to_dict(metrics, data)
 
-                grad_norm = self._optimizer_step()
-                data = {'actor/grad_norm': grad_norm.detach().item()}
+            grad_norm = self._optimizer_step()
+            data = {'actor/grad_norm': grad_norm.detach().item()}
             append_to_dict(metrics, data)
         self.actor_optimizer.zero_grad()
         return metrics
