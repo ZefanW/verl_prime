@@ -55,6 +55,11 @@ class DataParallelPPOActor(BasePPOActor):
 
         self.compute_entropy_from_logits = torch.compile(verl_F.entropy_from_logits, dynamic=True)
 
+        # if self.config.get('entropy_type',None) =='Adaptive':
+        #     self.config.exact_entropy_coeff = 0
+        # else:
+        #     self.config.exact_entropy_coeff = self.config.get('entropy_coeff', 0.)
+
     def _forward_micro_batch(self, micro_batch, temperature) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Returns: 
@@ -283,7 +288,7 @@ class DataParallelPPOActor(BasePPOActor):
                 if self.config.get('clip_high', None) is not None:
                     # 一种特殊clip策略，要求概率超过0.9就不允许进一步优化
                         clip_ratios[1] = self.config.clip_high
-                entropy_coeff = self.config.entropy_coeff
+                entropy_coeff = self.config.entropy_coeff # 这个key如果设置了Adaptive可能在循环外被修改
 
                 # all return: (bsz, response_length)
                 entropy, log_prob = self._forward_micro_batch(micro_batch=data, temperature=temperature)
@@ -302,6 +307,14 @@ class DataParallelPPOActor(BasePPOActor):
                                                                                   clipranges=clip_ratios)
                 # compute entropy loss from entropy
                 entropy_loss = verl_F.masked_mean(entropy, response_mask)
+
+                # 按照k3计算KL，可以减轻统计方差
+
+                ppo_kl_logratio = old_log_prob - log_prob
+                ppo_kl_ratio = torch.exp(ppo_kl_logratio)
+                ppo_kl_exact = (ppo_kl_ratio - ppo_kl_logratio - 1).contiguous()
+                ppo_kl_exact=torch.clamp(ppo_kl_exact, min=-10, max=10)
+                ppo_kl_exact = verl_F.masked_mean(ppo_kl_exact, response_mask)
 
                 # compute policy loss
                 policy_loss = pg_loss - entropy_loss * entropy_coeff
@@ -331,9 +344,11 @@ class DataParallelPPOActor(BasePPOActor):
 
                 data = {
                     'actor/entropy_loss': entropy_loss.detach().item(),
+                    'actor/entropy_coef': entropy_coeff,
                     'actor/pg_loss': pg_loss.detach().item(),
                     'actor/pg_clipfrac': pg_clipfrac.detach().item(),
                     'actor/ppo_kl': ppo_kl.detach().item(),
+                    'actor/ppo_kl_exact': ppo_kl_exact.detach().item(),
                 }
                 append_to_dict(metrics, data)
 

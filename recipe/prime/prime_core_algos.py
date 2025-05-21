@@ -32,7 +32,7 @@ def compute_prime_advantage_return(data: verl.DataProto, eos_mask: torch.Tensor,
         q_tensor[eos_mask==0]=0
         V_last = q_tensor.sum(dim=-1)
         Q_tensor = q_tensor.cumsum(dim=-1)
-        Q_tensor[:,1:]=q_tensor[:,:-1]
+        Q_tensor[:,1:]=Q_tensor[:,:-1]
         Q_tensor[:,0]=0
         # for start_pos in range(0,q_tensor.shape[0], n_samples):
             # highlight: partition暂时被修改，partition总是直接等于acc-value_last，加上这个以后可以让prime在训崩以后还能重新把acc拉起来
@@ -139,8 +139,6 @@ def compute_prime_advantage_return(data: verl.DataProto, eos_mask: torch.Tensor,
     return advantages, returns, metrics
 
 def compute_prime_value_advantage_return(data: verl.DataProto, eos_mask: torch.Tensor, n_samples, config):
-    # 从还原PRIME开始逐步修改value model. 首先把batch norm操作全部复现一遍，至少允许设置lambda，然后再逐步调整。
-    # 需要小心：value mask需要多留一位? 正常critic的mask会多保留一位，保留的一位是last token输入并生成eos的这一步，并且数值没有被锁死到0，虽然理应模型可以快速习得eos token并将它设为0。r_t实际上是生成last token时给出的，并非生成eos时给出，这一点很容易想明白，如果生成长度为1那么reward在位置0。生成eos token的advantage一般就是0，RL并不会直接导致eos token的生成概率崩溃。
     prompt_ids = data.batch['prompts']
     prompt_length = prompt_ids.shape[-1]
     valid_response_length = data.batch['attention_mask'][:, prompt_length:].sum(-1)
@@ -154,13 +152,13 @@ def compute_prime_value_advantage_return(data: verl.DataProto, eos_mask: torch.T
         q_tensor[eos_mask==0]=0
         V_last = q_tensor.sum(dim=-1)
         Q_tensor = q_tensor.cumsum(dim=-1)
-        Q_tensor[:,1:]=q_tensor[:,:-1]
+        Q_tensor[:,1:]=Q_tensor[:,:-1]
         Q_tensor[:,0]=0
 
         # normalize like prime，说实话这个norm怪怪的，不是按照value在norm而是按照dpo reward-value
         # Q_tensor/= (V_last.abs().max()+ 1e-6)
-        reverse_cumsum = torch.cumsum(q_tensor.flip(dims=[1]), dim=-1)
-        Q_tensor/= (reverse_cumsum.abs().max() + 1e-6)
+        # reverse_cumsum = torch.cumsum(q_tensor.flip(dims=[1]), dim=-1)
+        # Q_tensor/= (reverse_cumsum.abs().max() + 1e-6)
 
         # set Q0 like prime
         Q_tensor+=(data.batch['acc']-V_last).unsqueeze(-1)
@@ -209,7 +207,7 @@ def compute_reasonable_prime_value_advantage_return(data: verl.DataProto, eos_ma
         q_tensor[eos_mask==0]=0
         V_last = q_tensor.sum(dim=-1)
         Q_tensor = q_tensor.cumsum(dim=-1)
-        Q_tensor[:,1:]=q_tensor[:,:-1]
+        Q_tensor[:,1:]=Q_tensor[:,:-1]
         Q_tensor[:,0]=0
 
         for i in range(0, Q_tensor.shape[0],n_samples):

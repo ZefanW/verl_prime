@@ -228,6 +228,9 @@ class RayPRIMETrainer(RayPPOTrainer):
                          val_reward_fn=val_reward_fn)
 
         self.use_critic = False
+        self.entropy_coeff = self.config.actor_rollout_ref.actor.entropy_coeff
+        if self.config.actor_rollout_ref.actor.get('entropy_type', None)=='Adaptive':
+            self.config.actor_rollout_ref.actor.entropy_coeff=0.
 
     def _validate_config(self):
         super()._validate_config()
@@ -572,11 +575,19 @@ class RayPRIMETrainer(RayPPOTrainer):
                                 ppo_epoch+=1
                                 actor_output = self.actor_rollout_wg.update_actor(batch)
                                 actor_output_metrics = reduce_metrics(actor_output.meta_info['metrics'])
+                                # 根据entropy设置entropy_coef
+                                if self.config.actor_rollout_ref.actor.get('entropy_type',None) == 'Adaptive':
+                                    cur_entropy = actor_output_metrics['actor/entropy_loss']
+                                    if cur_entropy<self.entropy_coeff and cur_entropy<5e-3:
+                                        self.config.actor_rollout_ref.actor.entropy_coeff += 1e-5
+                                    else:
+                                        self.config.actor_rollout_ref.actor.entropy_coeff = 0.
+
                                 # 如果不是ppo_epoch不是整数，当ppo_kl>=这个数值时才允许退出。
-                                if self.config.actor_rollout_ref.actor.ppo_epochs<1 and actor_output_metrics['actor/ppo_kl']>=self.config.actor_rollout_ref.actor.ppo_epochs:
+                                if self.config.actor_rollout_ref.actor.ppo_epochs<1 and actor_output_metrics['actor/ppo_kl_exact']>=self.config.actor_rollout_ref.actor.ppo_epochs:
                                     break
                                 # 最多允许跑4epoch
-                                if ppo_epoch>=4:
+                                if ppo_epoch>=self.config.actor_rollout_ref.actor.ppo_epochs_max:
                                     break
                         metrics.update(actor_output_metrics)
                         metrics['ppo_epoch']=ppo_epoch
