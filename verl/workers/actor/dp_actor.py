@@ -252,6 +252,10 @@ class DataParallelPPOActor(BasePPOActor):
         else:
             dataloader = batch.split(self.config.ppo_mini_batch_size)
 
+        if self.config.entropy_type == 'Adaptive':
+            entropy_coeff = data.meta_info['entropy_coeff']
+        else:
+            entropy_coeff = self.config.entropy_coeff  # 这个key如果设置了Adaptive可能在循环外被修改
         metrics = {}
 
         for batch_idx, data in enumerate(dataloader):
@@ -288,7 +292,7 @@ class DataParallelPPOActor(BasePPOActor):
                 if self.config.get('clip_high', None) is not None:
                     # 一种特殊clip策略，要求概率超过0.9就不允许进一步优化
                         clip_ratios[1] = self.config.clip_high
-                entropy_coeff = self.config.entropy_coeff # 这个key如果设置了Adaptive可能在循环外被修改
+
 
                 # all return: (bsz, response_length)
                 entropy, log_prob = self._forward_micro_batch(micro_batch=data, temperature=temperature)

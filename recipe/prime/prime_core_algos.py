@@ -148,8 +148,30 @@ def compute_prime_value_advantage_return(data: verl.DataProto, eos_mask: torch.T
 
     with torch.no_grad():
         assert 'rm_scores' in data.batch.keys() and 'acc' in data.batch.keys()
-        q_tensor = data.batch['rm_scores']
+        q_tensor = data.batch['rm_scores'].clone()
         q_tensor[eos_mask==0]=0
+
+        # 对q_tensor做rloo
+        def masked_rloo(reward_tensor_original, mask_tensor):
+            reward_tensor = reward_tensor_original.clone()
+            reward_tensor[~mask_tensor] = 0
+            for start_pos in range(0, reward_tensor.shape[0], n_samples):
+                cur_rewards_mean = torch.cat([
+                    reward_tensor[pos:pos + 1][mask_tensor[pos:pos + 1]].mean(dim=0, keepdim=True)
+                    for pos in range(start_pos, start_pos + n_samples)
+                ],
+                    dim=0)
+                cur_rewards_sum = cur_rewards_mean.sum()
+                cur_reward_baseline = cur_rewards_sum / (n_samples - 1)
+                reward_tensor[start_pos:start_pos + n_samples][
+                    mask_tensor[start_pos:start_pos + n_samples]] = \
+                    reward_tensor[start_pos:start_pos + n_samples][
+                        mask_tensor[start_pos:start_pos + n_samples]] * (
+                            n_samples / (n_samples - 1)) - cur_reward_baseline
+
+            return reward_tensor
+        q_tensor = masked_rloo(q_tensor, eos_mask.bool())
+
         V_last = q_tensor.sum(dim=-1)
         Q_tensor = q_tensor.cumsum(dim=-1)
         Q_tensor[:,1:]=Q_tensor[:,:-1]
@@ -162,7 +184,7 @@ def compute_prime_value_advantage_return(data: verl.DataProto, eos_mask: torch.T
 
         # set Q0 like prime
         Q_tensor+=(data.batch['acc']-V_last).unsqueeze(-1)
-        Q_tensor[eos_mask==0]=0
+        Q_tensor[ eos_mask == 0 ] = 0
 
         # calculate advantage of prime with lambda
         token_level_rewards=torch.zeros_like(q_tensor)
@@ -205,9 +227,14 @@ def compute_reasonable_prime_value_advantage_return(data: verl.DataProto, eos_ma
         assert 'rm_scores' in data.batch.keys() and 'acc' in data.batch.keys()
         q_tensor = data.batch['rm_scores']
         q_tensor[eos_mask==0]=0
+        # 直接把prm输出squeeze到0-1范围内，作用很简单就是移除DPO的negative effect，
+        for i in range(0, q_tensor.shape[0], n_samples):
+            q_tensor_mean = q_tensor[i:i+n_samples, :][eos_mask[i:i+n_samples].bool()].mean()
+            q_tensor[i:i+n_samples] -= q_tensor_mean
+        q_tensor[eos_mask==0]=0
         V_last = q_tensor.sum(dim=-1)
         Q_tensor = q_tensor.cumsum(dim=-1)
-        Q_tensor[:,1:]=Q_tensor[:,:-1]
+        Q_tensor[:,1:] = Q_tensor[:,:-1]
         Q_tensor[:,0]=0
 
         for i in range(0, Q_tensor.shape[0],n_samples):
@@ -221,7 +248,7 @@ def compute_reasonable_prime_value_advantage_return(data: verl.DataProto, eos_ma
             estimate_acc = (global_acc*win_rate_all)/(global_acc*win_rate_all+(1-global_acc)*(1-win_rate_all))
             Q_tensor[i:i+n_samples] = estimate_acc
 
-        Q_tensor[eos_mask==0]=0
+        Q_tensor[ eos_mask==0 ] = 0
 
         # calculate advantage of prime with lambda
         token_level_rewards=torch.zeros_like(q_tensor)

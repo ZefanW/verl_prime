@@ -230,7 +230,12 @@ class RayPRIMETrainer(RayPPOTrainer):
         self.use_critic = False
         self.entropy_coeff = self.config.actor_rollout_ref.actor.entropy_coeff
         if self.config.actor_rollout_ref.actor.get('entropy_type', None)=='Adaptive':
-            self.config.actor_rollout_ref.actor.entropy_coeff=0.
+            # self.config.actor_rollout_ref.actor.entropy_coeff=0.
+            self.current_entropy_coeff = 0.0
+            self.effective_entropy_coeff = 0.0
+        else:
+            self.current_entropy_coeff = self.config.actor_rollout_ref.actor.entropy_coeff
+            self.effective_entropy_coeff = self.config.actor_rollout_ref.actor.entropy_coeff
 
     def _validate_config(self):
         super()._validate_config()
@@ -410,7 +415,7 @@ class RayPRIMETrainer(RayPPOTrainer):
 
         # we start from step 1
         self.global_steps += 1
-
+        old_batches = [] # 实现最简单的sample replay, 先只用一个old batch就行
         for epoch in range(self.config.trainer.total_epochs):
             pending_batch_list = []
             for batch_dict in self.train_dataloader:
@@ -573,15 +578,28 @@ class RayPRIMETrainer(RayPPOTrainer):
                                 if self.config.actor_rollout_ref.actor.ppo_epochs>=1 and ppo_epoch>=self.config.actor_rollout_ref.actor.ppo_epochs:
                                     break
                                 ppo_epoch+=1
+                                batch.meta_info['entropy_coeff'] = self.effective_entropy_coeff
+
+                                if self.config.actor_rollout_ref.actor.get('shuffle', False): # warning: this is an in-place operation!
+                                    batch = batch.reorder(torch.randperm(len(batch)))
+
                                 actor_output = self.actor_rollout_wg.update_actor(batch)
                                 actor_output_metrics = reduce_metrics(actor_output.meta_info['metrics'])
                                 # 根据entropy设置entropy_coef
                                 if self.config.actor_rollout_ref.actor.get('entropy_type',None) == 'Adaptive':
                                     cur_entropy = actor_output_metrics['actor/entropy_loss']
-                                    if cur_entropy<self.entropy_coeff and cur_entropy<5e-3:
-                                        self.config.actor_rollout_ref.actor.entropy_coeff += 1e-5
+                                    if cur_entropy<self.entropy_coeff:
+                                        self.current_entropy_coeff += 5e-3
+                                        self.effective_entropy_coeff = self.current_entropy_coeff
+                                        self.current_entropy_coeff = max(min(self.current_entropy_coeff, 1), 0)
+                                        # self.current_entropy_coeff = max(min(self.current_entropy_coeff, 1),0)
+
+                                        # self.config.actor_rollout_ref.actor.entropy_coeff = self.current_entropy_coeff
                                     else:
-                                        self.config.actor_rollout_ref.actor.entropy_coeff = 0.
+                                        self.current_entropy_coeff -= 5e-3
+                                        self.current_entropy_coeff = max(min(self.current_entropy_coeff, 1), 0)
+                                        self.effective_entropy_coeff = 0
+                                        # self.config.actor_rollout_ref.actor.entropy_coeff=0
 
                                 # 如果不是ppo_epoch不是整数，当ppo_kl>=这个数值时才允许退出。
                                 if self.config.actor_rollout_ref.actor.ppo_epochs<1 and actor_output_metrics['actor/ppo_kl_exact']>=self.config.actor_rollout_ref.actor.ppo_epochs:
@@ -592,6 +610,8 @@ class RayPRIMETrainer(RayPPOTrainer):
                         metrics.update(actor_output_metrics)
                         metrics['ppo_epoch']=ppo_epoch
 
+                    # old_batches.append(batch)
+                    # old_batches=old_batches[-1]
                     # validate
                     if self.val_reward_fn is not None and self.config.trainer.test_freq > 0 and \
                         self.global_steps % self.config.trainer.test_freq == 0:

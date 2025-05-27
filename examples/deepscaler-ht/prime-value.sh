@@ -3,7 +3,7 @@ set -x
 
 PROJECT_NAME='deepscaler1.5b-t1.0'
 #EXPERIMENT_NAME="primepp-stable-milde-${LAM}-q0+-${REF_TYPE}"
-EXPERIMENT_NAME="primev-cetruncate-nobox-${LAM}-primelike2"
+EXPERIMENT_NAME="primev-cetruncate-nobox-nogt-${LAM}-rloolike2"
 SFT_MODEL_PATH=/home/wangzefan/huggingface/DeepSeek-R1-Distill-Qwen-1.5B
 DEEPSCALER=/home/wangzefan/dataset/dataset/prime-rl-math-wo-prompt/deepscaler_nobox.parquet
 AIME=/home/wangzefan/dataset/dataset/prime-rl-math-wo-prompt/aime2024_32.parquet
@@ -36,6 +36,8 @@ python3 -m recipe.prime.main_prime \
     actor_rollout_ref.actor.fsdp_config.param_offload=True \
     actor_rollout_ref.actor.fsdp_config.optimizer_offload=True \
     actor_rollout_ref.actor.kl_loss_coef=0.001 \
+    actor_rollout_ref.actor.entropy_coeff=0.2 \
+    actor_rollout_ref.actor.entropy_type=Adaptive \
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=1 \
     actor_rollout_ref.rollout.tensor_model_parallel_size=$PARALLEL_SIZE \
     actor_rollout_ref.rollout.name=vllm \
@@ -45,8 +47,8 @@ python3 -m recipe.prime.main_prime \
     actor_rollout_ref.rollout.temperature=1.0 \
     actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1 \
     actor_rollout_ref.actor.ulysses_sequence_parallel_size=$PARALLEL_SIZE \
-    algorithm.adv_estimator=prime_value \
-    algorithm.reward_gt_coef=5 \
+    algorithm.adv_estimator=prime_value_ce \
+    algorithm.reward_gt_coef=0 \
     algorithm.reward_dpo_coef=10 \
     algorithm.lam=$LAM \
     reward_model.model.path=$SFT_MODEL_PATH \
@@ -75,5 +77,7 @@ python3 -m recipe.prime.main_prime \
     trainer.total_epochs=100 \
     trainer.default_local_dir="$CKPT_PATH"/"$PROJECT_NAME"/"$EXPERIMENT_NAME" \
     trainer.validate_sample=True \
-    trainer.val_before_train=True \
+    trainer.val_before_train=False \
+#    actor_rollout_ref.actor.ppo_epochs=5e-5 \
+#    actor_rollout_ref.actor.clip_high=adaptive_bound \
 
