@@ -101,6 +101,28 @@ def compute_advantage(data: DataProto, adv_estimator, config, dpo_acc=0.5):
         data.batch['advantages'] = advantages
         data.batch['returns'] = returns
         data.meta_info['adv_metrics'] = metrics
+    elif adv_estimator == 'prime_middle_ce': # 至少有两类value model，一种是直接sigmoid就当做value用，使用特殊BellEq。另一种是转成概率
+        responses = data.batch['responses']
+        response_length = responses.size(-1)
+        attention_mask = data.batch['attention_mask']
+        response_mask = attention_mask[:, -response_length:]
+        advantages, returns, metrics = prime_core_algos.compute_middle_prime_advantage_return(data, response_mask,
+                                                                             config.actor_rollout_ref.rollout.n, config, linear=False)
+        data.batch['advantages'] = advantages
+        data.batch['returns'] = returns
+        data.meta_info['adv_metrics'] = metrics
+    elif adv_estimator == 'prime_middle_ce_linear':
+        responses = data.batch['responses']
+        response_length = responses.size(-1)
+        attention_mask = data.batch['attention_mask']
+        response_mask = attention_mask[:, -response_length:]
+        advantages, returns, metrics = prime_core_algos.compute_middle_prime_advantage_return(data, response_mask,
+                                                                                              config.actor_rollout_ref.rollout.n,
+                                                                                              config, linear=True)
+        data.batch['advantages'] = advantages
+        data.batch['returns'] = returns
+        data.meta_info['adv_metrics'] = metrics
+
     else:
         raise NotImplementedError
     return data
@@ -569,7 +591,9 @@ class RayPRIMETrainer(RayPPOTrainer):
                         metrics.update(
                             {'reward_model/td0_loss': compute_return_smoothness(batch.batch['returns']).item()})
 
-                    # update actor. if warmup is toggled on, skip this istep
+                    # update actor. if warmup is toggled on, skip this step
+                    # because the batch might be changed, use another variable pointing at the current batch
+                    batch_ = batch
                     if self.config.algorithm.get('warmup',False) == False:
                         with _timer('update_actor', timing_raw):
                             # ppo epoch的逻辑放在这
@@ -580,8 +604,13 @@ class RayPRIMETrainer(RayPPOTrainer):
                                 ppo_epoch+=1
                                 batch.meta_info['entropy_coeff'] = self.effective_entropy_coeff
 
-                                if self.config.actor_rollout_ref.actor.get('shuffle', False): # warning: this is an in-place operation!
-                                    batch = batch.reorder(torch.randperm(len(batch)))
+                                # if self.config.actor_rollout_ref.actor.get('shuffle', False): # warning: this is an in-place operation!
+                                #     batch = batch.reorder(torch.randperm(len(batch)))
+
+                                # 如果ppo_epoch不是1，提取旧的batch来训练
+                                # 一个额外策略：根据entropy决定，高entropy下不切换样本，尽量快速exploit。低entropy则切换样本
+                                if ppo_epoch>1 and len(old_batches)>0 and actor_output_metrics['actor/entropy_loss']<self.entropy_coeff:
+                                    batch = old_batches[-((ppo_epoch-1)%len(old_batches))-1]
 
                                 actor_output = self.actor_rollout_wg.update_actor(batch)
                                 actor_output_metrics = reduce_metrics(actor_output.meta_info['metrics'])
@@ -591,13 +620,13 @@ class RayPRIMETrainer(RayPPOTrainer):
                                     if cur_entropy<self.entropy_coeff:
                                         self.current_entropy_coeff += 5e-3
                                         self.effective_entropy_coeff = self.current_entropy_coeff
-                                        self.current_entropy_coeff = max(min(self.current_entropy_coeff, 1), 0)
+                                        self.current_entropy_coeff = max(min(self.current_entropy_coeff, 1e-1), 0)
                                         # self.current_entropy_coeff = max(min(self.current_entropy_coeff, 1),0)
 
                                         # self.config.actor_rollout_ref.actor.entropy_coeff = self.current_entropy_coeff
                                     else:
                                         self.current_entropy_coeff -= 5e-3
-                                        self.current_entropy_coeff = max(min(self.current_entropy_coeff, 1), 0)
+                                        self.current_entropy_coeff = max(min(self.current_entropy_coeff, 1e-1), 0)
                                         self.effective_entropy_coeff = 0
                                         # self.config.actor_rollout_ref.actor.entropy_coeff=0
 
@@ -609,9 +638,10 @@ class RayPRIMETrainer(RayPPOTrainer):
                                     break
                         metrics.update(actor_output_metrics)
                         metrics['ppo_epoch']=ppo_epoch
+                    batch = batch_
 
-                    # old_batches.append(batch)
-                    # old_batches=old_batches[-1]
+                    old_batches.append(batch)
+                    old_batches = old_batches[-8:]
                     # validate
                     if self.val_reward_fn is not None and self.config.trainer.test_freq > 0 and \
                         self.global_steps % self.config.trainer.test_freq == 0:

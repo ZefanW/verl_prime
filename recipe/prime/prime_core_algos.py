@@ -278,6 +278,76 @@ def compute_reasonable_prime_value_advantage_return(data: verl.DataProto, eos_ma
 
     return advantages, returns, metrics
 
+def compute_middle_prime_advantage_return(data: verl.DataProto, eos_mask: torch.Tensor, n_samples, config, linear=False, trust_acc=True):
+    # 正例的optimal是0。比如按照acc求一个acc
+    prompt_ids = data.batch['prompts']
+    prompt_length = prompt_ids.shape[-1]
+    valid_response_length = data.batch['attention_mask'][:, prompt_length:].sum(-1)
+    gamma=1
+    lam=config.algorithm.lam
+    beta = config.reward_model.model.get('beta_test', 0.05)
+
+    with torch.no_grad():
+        assert 'rm_scores' in data.batch.keys() and 'acc' in data.batch.keys()
+        q_tensor = data.batch['rm_scores']
+        q_tensor[eos_mask==0]=0
+
+        V_last = q_tensor.sum(dim=-1)
+        Q_tensor = q_tensor.cumsum(dim=-1)
+        Q_tensor[:,1:] = Q_tensor[:,:-1]
+        Q_tensor[:,0]=0
+
+        for i in range(0, Q_tensor.shape[0],n_samples):
+            # estimate margin
+            group_acc = data.batch['acc'][i:i + n_samples].mean()
+            warped_group_acc = group_acc / 2
+            margin= beta * torch.log(warped_group_acc / (1 - warped_group_acc))
+            if warped_group_acc == 0:
+                margin = torch.zeros_like(margin)
+
+            Q_tensor[i:i+n_samples] = margin
+
+        Q_tensor_reward = Q_tensor.clone()
+        Q_tensor_reward[eos_mask==0]=0
+        Q_tensor_reward=Q_tensor_reward.clamp(max=0.)
+
+        # 到这一步，Q_tensor_reward是bound到(-inf, 0)的 logits数值
+        # linear的含义是转化为probability
+        # non linear的含义是直接sigmoid然后乘2
+        if linear:
+            Q_tensor = torch.exp(Q_tensor_reward/beta)
+            Q_tensor[eos_mask==0]=0
+        else:
+            Q_tensor = torch.sigmoid(Q_tensor_reward)*2
+            Q_tensor[eos_mask==0]=0
+
+        # calculate advantage of prime with lambda
+        token_level_rewards=torch.zeros_like(q_tensor)
+        token_level_rewards[
+            torch.arange(0, valid_response_length.shape[0], dtype=torch.long, device=valid_response_length.device),
+            valid_response_length - 1] = data.batch['acc']
+
+        lastgaelam = 0
+        advantages_reversed = []
+        gen_len = q_tensor.shape[1]
+
+        for t in reversed(range(gen_len)):
+            nextvalues = Q_tensor[:, t + 1] if t < gen_len - 1 else 0.0
+            delta = token_level_rewards[:, t] + gamma * nextvalues - Q_tensor[:, t] #
+            lastgaelam = delta + gamma * lam * lastgaelam
+            advantages_reversed.append(lastgaelam)
+        advantages = torch.stack(advantages_reversed[::-1], dim=1)
+        returns = advantages + Q_tensor
+
+        # calculate advantage from acc reward
+        advantages_acc = eos_mask*data.batch['acc'].unsqueeze(-1)
+
+        # combine advantages
+        advantages = verl_F.masked_whiten(advantages*config.algorithm.reward_dpo_coef + advantages_acc*config.algorithm.reward_gt_coef, eos_mask)
+
+        metrics=compute_value_model_metrics(Q_tensor, eos_mask, data.batch['acc'], returns)
+
+    return advantages, returns, metrics
 
 def compute_rloo_advantage_return(data: verl.DataProto, eos_mask: torch.Tensor, n_samples, config):
     # calculate rloo reward on different reward sources, and sum again
@@ -351,6 +421,13 @@ def compute_rloo_advantage_return(data: verl.DataProto, eos_mask: torch.Tensor, 
 def compute_ce_dpo_loss_rm(token_level_scores, acc, eos_mask, beta):
     cur_scores = ((token_level_scores * eos_mask).sum(dim=1) * beta).sigmoid()
     cur_dpo_loss = torch.nn.functional.binary_cross_entropy(cur_scores, acc)
+    return cur_dpo_loss
+
+def compute_middle_ce_loss_rm(token_level_scores, acc, eos_mask, beta, margin=None):
+    if margin==None:
+        margin = torch.zeros_like(acc)
+    cur_scores = ((token_level_scores * eos_mask).sum(dim=1) * beta + margin).sigmoid()
+    cur_dpo_loss = torch.nn.functional.binary_cross_entropy(cur_scores, acc/2)
     return cur_dpo_loss
 
 def compute_margin_ce_dpo_loss_rm(token_level_scores, acc, eos_mask, beta, gamma=1.0):

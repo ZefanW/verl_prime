@@ -3,7 +3,7 @@ set -x
 
 PROJECT_NAME='deepscaler1.5b-t1.0'
 #EXPERIMENT_NAME="primepp-stable-milde-${LAM}-q0+-${REF_TYPE}"
-EXPERIMENT_NAME="primev-cetruncate-nobox-nogt-${LAM}-rloolike2"
+EXPERIMENT_NAME="primev-cetruncate-nobox-nogt-${LAM}-middlece-linear"
 SFT_MODEL_PATH=/home/wangzefan/huggingface/DeepSeek-R1-Distill-Qwen-1.5B
 DEEPSCALER=/home/wangzefan/dataset/dataset/prime-rl-math-wo-prompt/deepscaler_nobox.parquet
 AIME=/home/wangzefan/dataset/dataset/prime-rl-math-wo-prompt/aime2024_32.parquet
@@ -47,7 +47,7 @@ python3 -m recipe.prime.main_prime \
     actor_rollout_ref.rollout.temperature=1.0 \
     actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1 \
     actor_rollout_ref.actor.ulysses_sequence_parallel_size=$PARALLEL_SIZE \
-    algorithm.adv_estimator=prime_value_ce \
+    algorithm.adv_estimator=prime_middle_ce_linear \
     algorithm.reward_gt_coef=0 \
     algorithm.reward_dpo_coef=10 \
     algorithm.lam=$LAM \
@@ -62,7 +62,7 @@ python3 -m recipe.prime.main_prime \
     reward_model.model.input_tokenizer=null \
     reward_model.mini_batch_size=64 \
     reward_model.ulysses_sequence_parallel_size=$PARALLEL_SIZE \
-    reward_model.model.loss_type=ce \
+    reward_model.model.loss_type=middle_ce \
     reward_model.model.truncate=True \
     reward_model.prime_norm=none \
     reward_model.model.ref_type=freeze \

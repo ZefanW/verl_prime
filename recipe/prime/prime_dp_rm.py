@@ -24,7 +24,8 @@ from torch import nn, optim
 
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 
-from .prime_core_algos import compute_ce_dpo_loss_rm, compute_detach_dpo_loss_rm, compute_margin_ce_dpo_loss_rm
+from .prime_core_algos import compute_ce_dpo_loss_rm, compute_detach_dpo_loss_rm, compute_margin_ce_dpo_loss_rm, \
+    compute_middle_ce_loss_rm
 from verl import DataProto
 from verl.trainer.ppo import core_algos
 from verl.workers.critic import BasePPOCritic
@@ -409,6 +410,15 @@ class DataParallelPRIMERewardModel:
                                                           beta=beta,
                                                           bon_mode='bon_rm',
                                                           use_ce=True)
+                elif self.config.model.loss_type == 'middle_ce':
+                    # 正例要求拟合到0，负例要求拟合到负无穷，margin=batch acc
+                    margin = torch.zeros_like(acc)
+                    for i in range(0, acc.shape[0], n_samples):
+                        group_acc = acc[i:i+n_samples].mean()
+                        if 1>group_acc>0:
+                            warped_group_acc = group_acc/2
+                            margin[i:i+n_samples] = beta*torch.log(warped_group_acc / (1- warped_group_acc))
+                    dpo_loss = compute_middle_ce_loss_rm(q, acc, eos_mask=eos_mask, beta=beta, margin=margin)
                 else:
                     raise NotImplementedError
 
