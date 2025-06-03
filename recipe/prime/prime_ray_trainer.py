@@ -255,6 +255,7 @@ class RayPRIMETrainer(RayPPOTrainer):
             # self.config.actor_rollout_ref.actor.entropy_coeff=0.
             self.current_entropy_coeff = 0.0
             self.effective_entropy_coeff = 0.0
+            self.target_entropy = self.config.actor_rollout_ref.actor['entropy_coeff'][0]
         else:
             self.current_entropy_coeff = self.config.actor_rollout_ref.actor.entropy_coeff
             self.effective_entropy_coeff = self.config.actor_rollout_ref.actor.entropy_coeff
@@ -609,7 +610,7 @@ class RayPRIMETrainer(RayPPOTrainer):
 
                                 # 如果ppo_epoch不是1，提取旧的batch来训练
                                 # 一个额外策略：根据entropy决定，高entropy下不切换样本，尽量快速exploit。低entropy则切换样本
-                                if ppo_epoch>1 and len(old_batches)>0 and actor_output_metrics['actor/entropy_loss']<self.entropy_coeff:
+                                if ppo_epoch>1 and len(old_batches)>0 and actor_output_metrics['actor/entropy_loss']<self.target_entropy:
                                     batch = old_batches[-((ppo_epoch-1)%len(old_batches))-1]
 
                                 actor_output = self.actor_rollout_wg.update_actor(batch)
@@ -617,16 +618,16 @@ class RayPRIMETrainer(RayPPOTrainer):
                                 # 根据entropy设置entropy_coef
                                 if self.config.actor_rollout_ref.actor.get('entropy_type',None) == 'Adaptive':
                                     cur_entropy = actor_output_metrics['actor/entropy_loss']
-                                    if cur_entropy<self.entropy_coeff:
-                                        self.current_entropy_coeff += 5e-3
+                                    if cur_entropy<self.target_entropy:
+                                        self.current_entropy_coeff += self.config.actor_rollout_ref.actor['entropy_coeff'][1]
                                         self.effective_entropy_coeff = self.current_entropy_coeff
-                                        self.current_entropy_coeff = max(min(self.current_entropy_coeff, 1e-1), 0)
+                                        self.current_entropy_coeff = max(min(self.current_entropy_coeff, self.config.actor_rollout_ref.actor['entropy_coeff'][2]), 0)
                                         # self.current_entropy_coeff = max(min(self.current_entropy_coeff, 1),0)
 
                                         # self.config.actor_rollout_ref.actor.entropy_coeff = self.current_entropy_coeff
                                     else:
-                                        self.current_entropy_coeff -= 5e-3
-                                        self.current_entropy_coeff = max(min(self.current_entropy_coeff, 1e-1), 0)
+                                        self.current_entropy_coeff -= self.config.actor_rollout_ref.actor['entropy_coeff'][1]
+                                        self.current_entropy_coeff = max(min(self.current_entropy_coeff, self.config.actor_rollout_ref.actor['entropy_coeff'][2]), 0)
                                         self.effective_entropy_coeff = 0
                                         # self.config.actor_rollout_ref.actor.entropy_coeff=0
 
