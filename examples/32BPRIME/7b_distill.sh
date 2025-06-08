@@ -3,7 +3,7 @@
 
 
 PROJECT_NAME='PRIMER'
-EXPERIMENT_NAME='7bdistill-skywork_reproduce-stage1'
+EXPERIMENT_NAME='7bdistill-skywork_reproduce-stage2-1e-4'
 SFT_MODEL_PATH=/home/wangzefan/huggingface/DeepSeek-R1-Distill-Qwen-7B
 DAPO=/home/wangzefan/dataset/dataset/prime-rl-math-wo-prompt/dapo.parquet
 SOR1=/home/wangzefan/dataset/dataset/prime-rl-math-wo-prompt/skyworkor1_nobox.parquet
@@ -25,7 +25,7 @@ python3 -m recipe.prime.main_prime \
     data.train_batch_size=256 \
     data.val_batch_size=6312 \
     data.max_prompt_length=1024 \
-    data.max_response_length=8192 \
+    data.max_response_length=16384 \
     data.filter_accuracy=True \
     data.filter_truncate=False \
     data.resample=True \
@@ -48,7 +48,7 @@ python3 -m recipe.prime.main_prime \
     actor_rollout_ref.rollout.gpu_memory_utilization=0.8 \
     actor_rollout_ref.actor.kl_loss_coef=0.000 \
     actor_rollout_ref.rollout.temperature=1.0 \
-    actor_rollout_ref.actor.entropy_coeff=[0.2,5e-3,1e-1] \
+    actor_rollout_ref.actor.entropy_coeff=[0.2,1e-4,5e-3] \
     actor_rollout_ref.actor.entropy_type=Adaptive \
     actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1 \
     actor_rollout_ref.actor.ulysses_sequence_parallel_size=$PARALLEL_SIZE \

@@ -462,6 +462,15 @@ class RayPPOTrainer(object):
 
         self._validate_config()
         self._create_dataloader()
+        self.entropy_coeff = self.config.actor_rollout_ref.actor.entropy_coeff
+        if self.config.actor_rollout_ref.actor.get('entropy_type', None)=='Adaptive':
+            # self.config.actor_rollout_ref.actor.entropy_coeff=0.
+            self.current_entropy_coeff = 0.0
+            self.effective_entropy_coeff = 0.0
+            self.target_entropy = self.config.actor_rollout_ref.actor['entropy_coeff'][0]
+        else:
+            self.current_entropy_coeff = self.config.actor_rollout_ref.actor.entropy_coeff
+            self.effective_entropy_coeff = self.config.actor_rollout_ref.actor.entropy_coeff
 
     def _validate_config(self):
         config = self.config
@@ -1056,10 +1065,30 @@ class RayPPOTrainer(object):
                     # implement critic warmup
                     if self.config.trainer.critic_warmup <= self.global_steps:
                         # update actor
+                        batch.meta_info['entropy_coeff'] = self.effective_entropy_coeff
                         with _timer('update_actor', timing_raw):
                             actor_output = self.actor_rollout_wg.update_actor(batch)
                         actor_output_metrics = reduce_metrics(actor_output.meta_info['metrics'])
                         metrics.update(actor_output_metrics)
+
+                        if self.config.actor_rollout_ref.actor.get('entropy_type', None) == 'Adaptive':
+                            cur_entropy = actor_output_metrics['actor/entropy_loss']
+                            if cur_entropy < self.target_entropy:
+                                self.current_entropy_coeff += self.config.actor_rollout_ref.actor['entropy_coeff'][1]
+                                self.effective_entropy_coeff = self.current_entropy_coeff
+                                self.current_entropy_coeff = max(min(self.current_entropy_coeff,
+                                                                     self.config.actor_rollout_ref.actor[
+                                                                         'entropy_coeff'][2]), 0)
+                                # self.current_entropy_coeff = max(min(self.current_entropy_coeff, 1),0)
+
+                                # self.config.actor_rollout_ref.actor.entropy_coeff = self.current_entropy_coeff
+                            else:
+                                self.current_entropy_coeff -= self.config.actor_rollout_ref.actor['entropy_coeff'][1]
+                                self.current_entropy_coeff = max(min(self.current_entropy_coeff,
+                                                                     self.config.actor_rollout_ref.actor[
+                                                                         'entropy_coeff'][2]), 0)
+                                self.effective_entropy_coeff = 0
+                                # self.config.actor_rollout_ref.actor.entropy_coeff=0
 
                     # validate
                     if self.val_reward_fn is not None and self.config.trainer.test_freq > 0 and \

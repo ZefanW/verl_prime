@@ -297,6 +297,21 @@ class DataParallelPPOActor(BasePPOActor):
                 # all return: (bsz, response_length)
                 entropy, log_prob = self._forward_micro_batch(micro_batch=data, temperature=temperature)
 
+                # do token filtration here!
+                if self.config.get('token_filter_type', None) is not None:
+                    if self.config.token_filter_type == 'entropy':
+                        percentage = self.config.token_filter_percentage
+                        threshold = torch.quantile(entropy[response_mask==1], 1-percentage)
+                        loss_mask = entropy>=threshold
+                    elif self.config.token_filter_type == 'norm':
+                        percentage = self.config.token_filter_percentage
+                        threshold = torch.quantile((1-log_prob)[response_mask==1], 1-percentage)
+                        loss_mask = entropy>=threshold
+                    else:
+                        raise NotImplementedError
+                else:
+                    loss_mask = None
+
                 if self.config.get('clip_high', None)=='adaptive_bound':
                     pg_loss, pg_clipfrac, ppo_kl = core_algos.compute_policy_loss_adaptive(old_log_prob=old_log_prob,
                                                                               log_prob=log_prob,
@@ -308,7 +323,8 @@ class DataParallelPPOActor(BasePPOActor):
                                                                                   log_prob=log_prob,
                                                                                   advantages=advantages,
                                                                                   eos_mask=response_mask,
-                                                                                  clipranges=clip_ratios)
+                                                                                  clipranges=clip_ratios,
+                                                                                  loss_mask=loss_mask)
                 # compute entropy loss from entropy
                 entropy_loss = verl_F.masked_mean(entropy, response_mask)
 

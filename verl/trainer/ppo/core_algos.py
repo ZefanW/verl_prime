@@ -68,7 +68,7 @@ def get_kl_controller(config):
 
 
 def compute_gae_advantage_return(token_level_rewards: torch.Tensor, values: torch.Tensor, eos_mask: torch.Tensor,
-                                 gamma: torch.Tensor, lam: torch.Tensor):
+                                 gamma, lam):
     """Adapted from https://github.com/huggingface/trl/blob/main/trl/trainer/ppo_trainer.py
 
     Args:
@@ -90,6 +90,9 @@ def compute_gae_advantage_return(token_level_rewards: torch.Tensor, values: torc
             shape: (bs, response_length)
 
     """
+    if lam == 'adaptive': # implement length adaptive lambda according to vapo. lam = 1 - 1/(\alpha*l), \alpha=0.05
+        length = eos_mask.sum(dim=-1)
+        lam = 1 - 1 / (0.05*length)
     with torch.no_grad():
         lastgaelam = 0
         advantages_reversed = []
@@ -274,7 +277,7 @@ def compute_rewards(token_level_scores, old_log_prob, ref_log_prob, kl_ratio):
     return token_level_scores - kl * kl_ratio
 
 
-def compute_policy_loss(old_log_prob, log_prob, advantages, eos_mask, clipranges):
+def compute_policy_loss(old_log_prob, log_prob, advantages, eos_mask, clipranges, loss_mask=None):
     """Adapted from https://github.com/huggingface/trl/blob/main/trl/trainer/ppo_trainer.py#L1122
 
     Args:
@@ -303,6 +306,8 @@ def compute_policy_loss(old_log_prob, log_prob, advantages, eos_mask, clipranges
     pg_losses = -advantages * ratio
     pg_losses2 = -advantages * torch.clamp(ratio, 1.0 - clipranges[0], 1.0 + clipranges[1])
 
+    if loss_mask is not None:
+        eos_mask = eos_mask * loss_mask
     pg_loss = verl_F.masked_mean(torch.max(pg_losses, pg_losses2), eos_mask)
     pg_clipfrac = verl_F.masked_mean(torch.gt(pg_losses2, pg_losses).float(), eos_mask)
     return pg_loss, pg_clipfrac, ppo_kl
