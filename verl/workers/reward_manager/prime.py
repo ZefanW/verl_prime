@@ -148,9 +148,9 @@ class PrimeRewardManager:
         # 如果prompt部分有think，或者tokenizer里面已经有了think这个token，那么回答部分必须同时存在</think>否则判定格式错误
         prompt_str =self.tokenizer.batch_decode(prompt_ids, skip_special_tokens=True)
         sequences_str = self.tokenizer.batch_decode(response_ids, skip_special_tokens=True)
-        for i in range(len(prompt_str)):
-            if ('<think>' in prompt_str[i] or '<think>' in self.tokenizer.vocab) and ('</think>' not in sequences_str[i]):
-                scores[i]=0.
+        # for i in range(len(prompt_str)):
+        #     if ('<think>' in prompt_str[i] or '<think>' in self.tokenizer.vocab) and ('</think>' not in sequences_str[i]):
+        #         scores[i]=0.
 
         data.batch['acc'] = torch.tensor(scores, dtype=torch.float32, device=prompt_ids.device)
         return scores

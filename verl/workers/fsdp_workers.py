@@ -25,6 +25,7 @@ from torch.distributed.device_mesh import init_device_mesh
 import verl.utils.torch_functional as verl_F
 from omegaconf import DictConfig, open_dict
 from verl import DataProto
+from verl.models.transformers.monkey_patch import apply_monkey_patch
 from verl.single_controller.base import Worker
 from verl.single_controller.base.decorator import register, Dispatch
 from verl.utils import hf_tokenizer, hf_processor
@@ -173,13 +174,13 @@ class ActorRolloutRefWorker(Worker):
 
         self.generation_config = get_generation_config(local_path, trust_remote_code=trust_remote_code)
 
-        if use_remove_padding:
-            from verl.models.registry import check_model_support_rmpad
-            check_model_support_rmpad(actor_model_config.model_type)
-
-        if use_remove_padding and self.ulysses_sequence_parallel_size > 1:
-            from verl.models.transformers.monkey_patch import apply_monkey_patch
-            apply_monkey_patch(actor_model_config, verbose=True)
+        # if use_remove_padding:
+        #     from verl.models.registry import check_model_support_rmpad
+        #     check_model_support_rmpad(actor_model_config.model_type)
+        #
+        # if use_remove_padding and self.ulysses_sequence_parallel_size > 1:
+        #     from verl.models.transformers.monkey_patch import apply_monkey_patch
+        #     apply_monkey_patch(actor_model_config, verbose=True)
 
         override_config_kwargs = {
             'bos_token_id': self.tokenizer.bos_token_id,
@@ -213,6 +214,13 @@ class ActorRolloutRefWorker(Worker):
                                                                   config=actor_model_config,
                                                                   attn_implementation='flash_attention_2',
                                                                   trust_remote_code=trust_remote_code)
+
+            apply_monkey_patch(
+                model=actor_module,
+                ulysses_sp_size=self.ulysses_sequence_parallel_size,
+                use_remove_padding=self.config.model.get("use_remove_padding", False),
+                use_fused_kernels=self.config.model.get("use_fused_kernels", False),
+            )
             # Apply Liger kernel to the model if use_liger is set to True
             # if use_liger:
             from liger_kernel.transformers.monkey_patch import _apply_liger_kernel_to_instance

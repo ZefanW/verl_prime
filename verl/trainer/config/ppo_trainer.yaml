@@ -49,7 +49,7 @@ actor_rollout_ref:
     ulysses_sequence_parallel_size: 1 # sp size
     entropy_type: none # 设置为Adaptive为Skywork风格的熵控制
     use_token_level_loss: False
-    token_filter_type: none
+    token_filter_type: null
     token_filter_percentage: 1.0
     optim:
       lr: 1e-6
