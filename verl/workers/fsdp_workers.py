@@ -22,6 +22,8 @@ import warnings
 import torch
 import torch.distributed
 from torch.distributed.device_mesh import init_device_mesh
+from torch.distributed.fsdp import StateDictType, ShardedStateDictConfig
+from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 import verl.utils.torch_functional as verl_F
 from omegaconf import DictConfig, open_dict
 from verl import DataProto
@@ -223,8 +225,8 @@ class ActorRolloutRefWorker(Worker):
             )
             # Apply Liger kernel to the model if use_liger is set to True
             # if use_liger:
-            from liger_kernel.transformers.monkey_patch import _apply_liger_kernel_to_instance
-            _apply_liger_kernel_to_instance(model=actor_module)
+            # from liger_kernel.transformers.monkey_patch import _apply_liger_kernel_to_instance
+            # _apply_liger_kernel_to_instance(model=actor_module)
 
             # some parameters may not in torch_dtype. TODO(zhangchi.usc1992) remove this after we switch to fsdp2
             actor_module.to(torch_dtype)
@@ -531,8 +533,8 @@ class ActorRolloutRefWorker(Worker):
         # perform recompute log_prob
         with self.ulysses_sharding_manager:
             data = self.ulysses_sharding_manager.preprocess_data(data)
-            output = self.actor.compute_log_prob(data=data)
-            output = DataProto.from_dict(tensors={'old_log_probs': output},
+            output, ent = self.actor.compute_log_prob(data=data)
+            output = DataProto.from_dict(tensors={'old_log_probs': output, 'old_entropy': ent},
                                          meta_info={'temperature': self.config.rollout.temperature})
             output = self.ulysses_sharding_manager.postprocess_data(output)
 
@@ -565,7 +567,7 @@ class ActorRolloutRefWorker(Worker):
         data.meta_info['use_dynamic_bsz'] = self.config.ref.log_prob_use_dynamic_bsz
         with self.ulysses_sharding_manager:
             data = self.ulysses_sharding_manager.preprocess_data(data)
-            output = self.ref_policy.compute_log_prob(data=data)
+            output, ent = self.ref_policy.compute_log_prob(data=data)
             output = DataProto.from_dict(tensors={'ref_log_prob': output})
             output = self.ulysses_sharding_manager.postprocess_data(output)
 
@@ -609,6 +611,29 @@ class ActorRolloutRefWorker(Worker):
         if self._is_offload_optimizer:
             offload_fsdp_optimizer(self.actor_optimizer)
 
+    @register(dispatch_mode=Dispatch.ALL_TO_ALL)
+    def load_ref_state_dict(self, state_dict):
+        if self._is_offload_param:
+            load_fsdp_model_to_gpu(self.ref_module_fsdp)
+        state_dict_cfg = ShardedStateDictConfig(offload_to_cpu=True)
+        with FSDP.state_dict_type(self.ref_module_fsdp, StateDictType.SHARDED_STATE_DICT, state_dict_cfg):
+            self.ref_module_fsdp.load_state_dict(state_dict)
+        if self._is_offload_param:
+            offload_fsdp_model_to_cpu(self.ref_module_fsdp)
+
+    @register(dispatch_mode=Dispatch.ALL_TO_ALL)
+    def get_actor_state_dict(self):
+        if self._is_offload_param:
+            load_fsdp_model_to_gpu(self.actor_module_fsdp)
+        state_dict_cfg = ShardedStateDictConfig(offload_to_cpu=True)
+        with FSDP.state_dict_type(self.actor_module_fsdp, StateDictType.SHARDED_STATE_DICT, state_dict_cfg):
+            model_state_dict = self.actor_module_fsdp.state_dict()
+
+        torch.distributed.barrier()
+        if self._is_offload_param:
+            offload_fsdp_model_to_cpu(self.actor_module_fsdp)
+
+        return model_state_dict
 
 class CriticWorker(Worker):
 

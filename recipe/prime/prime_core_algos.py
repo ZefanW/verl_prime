@@ -349,6 +349,219 @@ def compute_middle_prime_advantage_return(data: verl.DataProto, eos_mask: torch.
 
     return advantages, returns, metrics
 
+def compute_simple_upv(data: verl.DataProto, eos_mask: torch.Tensor, n_samples, config, linear=False, trust_acc=True):
+    prompt_ids = data.batch['prompts']
+    prompt_length = prompt_ids.shape[-1]
+    valid_response_length = data.batch['attention_mask'][:, prompt_length:].sum(-1)
+    gamma=1
+    lam=config.algorithm.lam
+    beta = config.reward_model.model.get('beta_test', 0.05)
+
+    with torch.no_grad():
+        assert 'rm_scores' in data.batch.keys() and 'acc' in data.batch.keys()
+        q_tensor = data.batch['rm_scores']
+        q_tensor[eos_mask==0]=0
+
+        # 根据其他样本估计一下confidence
+
+        # for start_pos in range(0, q_tensor.shape[0], n_samples):
+        #     q_tensor[start_pos:start_pos+n_samples] = verl_F.masked_whiten(q_tensor[start_pos:start_pos+n_samples], eos_mask[start_pos:start_pos+n_samples])
+        # q_tensor = verl_F.masked_whiten(q_tensor, eos_mask)
+
+        V_last = q_tensor.sum(dim=-1)
+        Q_tensor = q_tensor.cumsum(dim=-1)
+        Q_tensor[:,1:] = Q_tensor[:,:-1]
+        Q_tensor[:,0]=0
+
+        ratio = torch.exp(Q_tensor)
+        ratio[torch.isnan(ratio)]=100 # 概率累计有上溢
+        ratio[torch.isinf(ratio)]=100
+        ratio[eos_mask==0]=0
+
+        V_tensor = torch.zeros_like(Q_tensor)
+
+        for i in range(0, Q_tensor.shape[0],n_samples):
+            # estimate margin. 和其他value model公平比较，这里的value estimation是不能作弊的，不能预先知道自己的reward
+            group_acc = data.batch['acc'][i:i + n_samples]
+            group_acc_rloo = (group_acc.sum(dim=-1,keepdims=True) - group_acc)/(n_samples-1)
+
+            V_tensor[i:i+n_samples] = torch.clamp(group_acc_rloo.unsqueeze(-1)*ratio[i:i+n_samples],0,1)
+
+        V_tensor[eos_mask==0]=0
+
+        # calculate advantage of prime with lambda
+        token_level_rewards=torch.zeros_like(V_tensor)
+        token_level_rewards[
+            torch.arange(0, valid_response_length.shape[0], dtype=torch.long, device=valid_response_length.device),
+            valid_response_length - 1] = data.batch['acc']
+
+        lastgaelam = 0
+        advantages_reversed = []
+        gen_len = V_tensor.shape[1]
+
+        for t in reversed(range(gen_len)):
+            nextvalues = V_tensor[:, t + 1] if t < gen_len - 1 else 0.0
+            delta = token_level_rewards[:, t] + gamma * nextvalues - V_tensor[:, t] #
+            lastgaelam = delta + gamma * lam * lastgaelam
+            advantages_reversed.append(lastgaelam)
+        advantages = torch.stack(advantages_reversed[::-1], dim=1)
+        returns = advantages + V_tensor
+
+        # calculate advantage from acc reward
+        advantages_acc = eos_mask*data.batch['acc'].unsqueeze(-1)
+
+        # combine advantages
+        advantages = verl_F.masked_whiten(advantages*config.algorithm.reward_dpo_coef + advantages_acc*config.algorithm.reward_gt_coef, eos_mask)
+
+        metrics=compute_value_model_metrics(V_tensor, eos_mask, data.batch['acc'], returns)
+
+    return advantages, returns, metrics
+
+def compute_adaptive_upv(data: verl.DataProto, eos_mask: torch.Tensor, n_samples, config, linear=False, trust_acc=True):
+    # 含义：按照推导来，自适应调整value model乘数
+    prompt_ids = data.batch['prompts']
+    prompt_length = prompt_ids.shape[-1]
+    valid_response_length = data.batch['attention_mask'][:, prompt_length:].sum(-1)
+    gamma=1
+    lam=config.algorithm.lam
+    beta = config.reward_model.model.get('beta_test', 0.05)
+
+    with torch.no_grad():
+        assert 'rm_scores' in data.batch.keys() and 'acc' in data.batch.keys()
+        q_tensor = data.batch['rm_scores']
+        q_tensor[eos_mask==0]=0
+
+        # V_last = q_tensor.sum(dim=-1)
+        Q_tensor = q_tensor.cumsum(dim=-1)
+        Q_tensor[:,1:] = Q_tensor[:,:-1]
+        Q_tensor[:,0]=0
+
+        V_tensor = torch.zeros_like(Q_tensor)
+        ratio = torch.exp(Q_tensor)
+        ratio[torch.isnan(ratio)]=100 # 概率累计有上溢
+        ratio[torch.isinf(ratio)]=100
+        ratio[eos_mask==0]=0
+
+        for i in range(0, Q_tensor.shape[0],n_samples):
+            # estimate margin. 和其他value model公平比较，这里的value estimation是不能作弊的，不能预先知道自己的reward
+            group_acc = data.batch['acc'][i:i + n_samples]
+            # group_acc_rloo = (group_acc.sum(dim=-1,keepdims=True) - group_acc)/(n_samples-1)
+            # V_tensor[i:i+n_samples] = torch.clamp(group_acc_rloo.unsqueeze(-1)*ratio[i:i+n_samples],0,1)
+
+            # cheat mode
+            V_tensor[i:i+n_samples] = torch.clamp(group_acc.mean()*ratio[i:i+n_samples],0,1)
+
+        # 统一求xi-1，令value model输出上界不超过1，下界不低于0，从而把value数值拉开差距
+        r = (ratio-1)[eos_mask==1]
+        V = V_tensor[eos_mask==1]
+        print(f'max_ratio: {r.max()+1} min_V: {r.min()+1}')
+        print(f'max_V: {V.max()} min_V: {V.min()}')
+        th_pos = torch.where(r > 0, (1 - V) / r, torch.full_like(r, float('inf')))
+        th_neg = torch.where(r < 0, -V / r, torch.full_like(r, float('inf')))
+
+        # 每个位置真正的约束是两者的最小值
+        th_each = torch.min(th_pos, th_neg)  # shape (M,)
+
+        # 允许10%的样本超限
+        xi_ratio = torch.quantile(th_each,0.1)
+
+        if torch.isinf(xi_ratio):
+            xi_ratio=1e-6
+
+        print(f'xi: {1/xi_ratio+1}')
+
+        V_tensor += (ratio-1)*xi_ratio
+
+        # calculate advantage of prime with lambda
+        token_level_rewards=torch.zeros_like(V_tensor)
+        token_level_rewards[
+            torch.arange(0, valid_response_length.shape[0], dtype=torch.long, device=valid_response_length.device),
+            valid_response_length - 1] = data.batch['acc']
+
+        lastgaelam = 0
+        advantages_reversed = []
+        gen_len = V_tensor.shape[1]
+
+        for t in reversed(range(gen_len)):
+            nextvalues = V_tensor[:, t + 1] if t < gen_len - 1 else 0.0
+            delta = token_level_rewards[:, t] + gamma * nextvalues - V_tensor[:, t] #
+            lastgaelam = delta + gamma * lam * lastgaelam
+            advantages_reversed.append(lastgaelam)
+        advantages = torch.stack(advantages_reversed[::-1], dim=1)
+        returns = advantages + V_tensor
+
+        # calculate advantage from acc reward
+        advantages_acc = eos_mask*data.batch['acc'].unsqueeze(-1)
+
+        # combine advantages
+        advantages = verl_F.masked_whiten(advantages*config.algorithm.reward_dpo_coef + advantages_acc*config.algorithm.reward_gt_coef, eos_mask)
+
+        metrics=compute_value_model_metrics(V_tensor, eos_mask, data.batch['acc'], returns)
+
+    return advantages, returns, metrics
+
+def compute_single_upv(data: verl.DataProto, eos_mask: torch.Tensor, n_samples, config, linear=False, trust_acc=True):
+    # baseline = pi_theta/pi_ref \cdot acc，
+    prompt_ids = data.batch['prompts']
+    prompt_length = prompt_ids.shape[-1]
+    valid_response_length = data.batch['attention_mask'][:, prompt_length:].sum(-1)
+    gamma=1
+    lam=config.algorithm.lam
+    beta = config.reward_model.model.get('beta_test', 0.05)
+
+    with torch.no_grad():
+        # assert 'rm_scores' in data.batch.keys() and 'acc' in data.batch.keys()
+        # q_tensor = data.batch['rm_scores']
+        # q_tensor[eos_mask==0]=0
+
+        # V_last = q_tensor.sum(dim=-1)
+        # Q_tensor = q_tensor.cumsum(dim=-1)
+        # Q_tensor[:,1:] = Q_tensor[:,:-1]
+        # Q_tensor[:,0]=0
+
+        log_ratio = data.batch['old_log_probs'] - data.batch['ref_log_prob']
+        ratio = torch.exp(log_ratio)
+        ratio[eos_mask==0]=0
+
+        V_tensor = torch.zeros_like(ratio)
+
+        for i in range(0, ratio.shape[0],n_samples):
+            # estimate margin. 和其他value model公平比较，这里的value estimation是不能作弊的，不能预先知道自己的reward
+            group_acc = data.batch['acc'][i:i + n_samples]
+            group_acc_rloo = (group_acc.sum(dim=-1,keepdims=True) - group_acc)/(n_samples-1)
+
+            V_tensor[i:i+n_samples] = torch.clamp(group_acc_rloo.unsqueeze(-1)*ratio[i:i+n_samples],0,1)
+
+        V_tensor[eos_mask==0]=0
+
+        # calculate advantage of prime with lambda
+        token_level_rewards=torch.zeros_like(V_tensor)
+        token_level_rewards[
+            torch.arange(0, valid_response_length.shape[0], dtype=torch.long, device=valid_response_length.device),
+            valid_response_length - 1] = data.batch['acc']
+
+        lastgaelam = 0
+        advantages_reversed = []
+        gen_len = V_tensor.shape[1]
+
+        for t in reversed(range(gen_len)):
+            nextvalues = V_tensor[:, t + 1] if t < gen_len - 1 else 0.0
+            delta = token_level_rewards[:, t] + gamma * nextvalues - V_tensor[:, t] #
+            lastgaelam = delta + gamma * lam * lastgaelam
+            advantages_reversed.append(lastgaelam)
+        advantages = torch.stack(advantages_reversed[::-1], dim=1)
+        returns = advantages + V_tensor
+
+        # calculate advantage from acc reward
+        advantages_acc = eos_mask*data.batch['acc'].unsqueeze(-1)
+
+        # combine advantages
+        advantages = verl_F.masked_whiten(advantages*config.algorithm.reward_dpo_coef + advantages_acc*config.algorithm.reward_gt_coef, eos_mask)
+
+        metrics=compute_value_model_metrics(V_tensor, eos_mask, data.batch['acc'], returns)
+
+    return advantages, returns, metrics
+
 def compute_rloo_advantage_return(data: verl.DataProto, eos_mask: torch.Tensor, n_samples, config):
     # calculate rloo reward on different reward sources, and sum again
     def masked_rloo(reward_tensor_original, mask_tensor):

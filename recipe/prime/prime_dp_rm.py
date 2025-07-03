@@ -412,12 +412,18 @@ class DataParallelPRIMERewardModel:
                                                           use_ce=True)
                 elif self.config.model.loss_type == 'middle_ce':
                     # 正例要求拟合到0，负例要求拟合到负无穷，margin=batch acc
+                    # 训测统一，都不允许知道自己的acc, margin必须是leave one out acc
                     margin = torch.zeros_like(acc)
                     for i in range(0, acc.shape[0], n_samples):
-                        group_acc = acc[i:i+n_samples].mean()
-                        if 1>group_acc>0:
-                            warped_group_acc = group_acc/2
-                            margin[i:i+n_samples] = beta*torch.log(warped_group_acc / (1- warped_group_acc))
+                        # group_acc = acc[i:i+n_samples].mean()
+                        group_acc = acc[i:i+n_samples]
+                        group_acc = (acc[i:i+n_samples].sum(dim=-1, keepdims=True)-group_acc)/(n_samples-1)
+                        # if 1>group_acc>0:
+                            # warped_group_acc = group_acc/2
+                        margin[i:i+n_samples] = beta*torch.log(group_acc)
+                        # 注意可能出现nan
+                    margin[torch.isnan(margin)] = 0
+                    margin[torch.isinf(margin)] = 0
                     dpo_loss = compute_middle_ce_loss_rm(q, acc, eos_mask=eos_mask, beta=beta, margin=margin)
                 else:
                     raise NotImplementedError

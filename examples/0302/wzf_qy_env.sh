@@ -13,7 +13,7 @@ unset VLLM_ATTENTION_BACKEND
 #export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 unset PYTORCH_CUDA_ALLOC_CONF
 export TOKENIZERS_PARALLELISM=true
-export WANDB_MODE=offline
+export WANDB_MODE=online
 export WANDB_DIR=/home/wangzefan/data/verl_prime/
 export SWANLAB_API_KEY='vP17PxpkO7x33BK1MWTK6'
 declare -g -n SWANLAB_LOG_DIR=WANDB_DIR
@@ -60,6 +60,8 @@ REMOTE_SSH_PORT=41198
 # 本地用来监听 SOCKS5 的端口
 LOCAL_SOCKS_PORT=17890
 
+REMOTE_SOCKS_PORT=7895
+
 HOSTNAME=$(hostname)
 if [[ "$HOSTNAME" == "dmx-login01" || "$HOSTNAME" == "dmx-login02" || "$HOSTNAME" == "dmx-login03" ]]; then
   echo "[INFO] 当前主机 ($HOSTNAME) 已经是跳板机，跳过代理隧道建立。"
@@ -75,7 +77,7 @@ while true; do
   sshpass -p \"$PASSWORD\" ssh -o StrictHostKeyChecking=no \
       -o ServerAliveInterval=30 \
       -o ServerAliveCountMax=3 \
-      -N -D $LOCAL_SOCKS_PORT -p $REMOTE_SSH_PORT $REMOTE_USER@$REMOTE_HOST
+      -N -L $LOCAL_SOCKS_PORT:localhost:${REMOTE_SOCKS_PORT} -p $REMOTE_SSH_PORT $REMOTE_USER@$REMOTE_HOST
   echo \"[\$(date '+%F %T')] SSH 隧道断开，5 秒后重连…\"
   sleep 5
 done"
@@ -88,7 +90,7 @@ while true; do
   sshpass -p \"$PASSWORD\" ssh -o StrictHostKeyChecking=no \
       -o ServerAliveInterval=30 \
       -o ServerAliveCountMax=3 \
-      -N -D $LOCAL_SOCKS_PORT -p $REMOTE_SSH_PORT $REMOTE_USER@$REMOTE_HOST
+      -N -L $LOCAL_SOCKS_PORT:localhost:${REMOTE_SOCKS_PORT} -p $REMOTE_SSH_PORT $REMOTE_USER@$REMOTE_HOST
   echo \"[\$(date '+%F %T')] SSH 隧道断开，5 秒后重连…\"
   sleep 5
 done"

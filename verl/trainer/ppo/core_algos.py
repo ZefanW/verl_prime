@@ -112,7 +112,6 @@ def compute_gae_advantage_return(token_level_rewards: torch.Tensor, values: torc
 
     return advantages, returns, metrics
 
-
 # NOTE(sgm): this implementation only consider outcome supervision, where the reward is a scalar.
 def compute_grpo_outcome_advantage(token_level_rewards: torch.Tensor,
                                    eos_mask: torch.Tensor,

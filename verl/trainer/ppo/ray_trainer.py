@@ -164,13 +164,25 @@ def apply_kl_penalty(data: DataProto, kl_ctrl: core_algos.AdaptiveKLController, 
 def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_repeat=1, config=None):
     # prepare response group
     # TODO: add other ways to estimate advantages
+
+    values = data.batch['values']
+    responses = data.batch['responses']
+    response_length = responses.size(-1)
+    attention_mask = data.batch['attention_mask']
+    response_mask = attention_mask[:, -response_length:]
+    token_level_rewards = data.batch['token_level_rewards']
     if adv_estimator == AdvantageEstimator.GAE:
-        values = data.batch['values']
-        responses = data.batch['responses']
-        response_length = responses.size(-1)
-        attention_mask = data.batch['attention_mask']
-        response_mask = attention_mask[:, -response_length:]
-        token_level_rewards = data.batch['token_level_rewards']
+        if config.algorithm.get('rloo_bound', False): # td1 error只能比rloo小，不能更大
+            print('applying rloo bound')
+            index = data.non_tensor_batch['uid']
+            advantages, returns, metrics = core_algos.compute_rloo_outcome_advantage(
+                token_level_rewards=token_level_rewards,
+                eos_mask=response_mask,
+                index=index)
+            values_rloo = data.batch['acc'].unsqueeze(1) - returns
+            values_rloo[response_mask==0]=0
+            values = torch.where(torch.abs(values-returns)<=torch.abs(values_rloo-returns), values, values_rloo)
+
         advantages, returns, metrics = core_algos.compute_gae_advantage_return(token_level_rewards=token_level_rewards,
                                                                       values=values,
                                                                       eos_mask=response_mask,
@@ -186,6 +198,7 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
                                                                       lam=config.algorithm.lam_critic)
         data.batch['returns'] = returns
         data.meta_info['adv_metrics'] = metrics
+
     elif adv_estimator == AdvantageEstimator.GRPO:
         token_level_rewards = data.batch['token_level_rewards']
         index = data.non_tensor_batch['uid']
@@ -996,7 +1009,10 @@ class RayPPOTrainer(object):
 
                     batch = self.filter_and_downsample(scores, batch)
 
-                    print('filter_and_downsample complete')
+                    batch.meta_info['avg_response_length'] = batch.batch[
+                        'attention_mask'][:, -batch.batch['responses'].shape[-1]:].sum(dim=-1).float().mean().item()
+
+                    # print('filter_and_downsample complete')
 
                     # balance the number of valid tokens on each dp rank.
                     # Note that this breaks the order of data inside the batch.
@@ -1066,6 +1082,32 @@ class RayPPOTrainer(object):
                     if self.config.trainer.critic_warmup <= self.global_steps:
                         # update actor
                         batch.meta_info['entropy_coeff'] = self.effective_entropy_coeff
+
+                        if self.config.actor_rollout_ref.actor.get('token_filter_type', None) is not None:
+                            percentage = self.config.actor_rollout_ref.actor.token_filter_percentage
+                            responses = batch.batch["responses"]
+                            response_length = responses.size(1)
+                            attention_mask = batch.batch["attention_mask"]
+                            response_mask = attention_mask[:, -response_length:]
+                            kth = int(response_mask.sum()*(1-percentage))
+                            if self.config.actor_rollout_ref.actor.token_filter_type == 'entropy':
+                                threshold = torch.kthvalue(old_log_prob.batch['old_entropy'][response_mask == 1], kth)[
+                                    0].item()
+                                filtered_mask = (old_log_prob.batch['old_entropy'] >= threshold) *response_mask
+                                batch.batch['filtered_mask'] = filtered_mask
+                                metrics['actor/filter_threshold'] = threshold
+
+                            elif self.config.actor_rollout_ref.actor.token_filter_type == 'norm': # 直接按照log prob倒着排序就可以
+                                threshold = torch.kthvalue((1-old_log_prob.batch['old_log_probs'])[response_mask == 1], kth)[
+                                    0].item()
+                                filtered_mask = [(old_log_prob.batch['old_log_probs'] <= 1- threshold)]*response_mask
+                                batch.batch['filtered_mask'] = filtered_mask
+                                metrics['actor/filter_threshold'] = threshold
+                            else:
+                                raise NotImplementedError
+                        else:
+                            pass
+
                         with _timer('update_actor', timing_raw):
                             actor_output = self.actor_rollout_wg.update_actor(batch)
                         actor_output_metrics = reduce_metrics(actor_output.meta_info['metrics'])

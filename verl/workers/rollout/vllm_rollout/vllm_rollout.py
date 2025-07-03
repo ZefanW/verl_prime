@@ -182,7 +182,7 @@ class vLLMRollout(BaseRollout):
                 'top_p': 0.95,
                 'top_k': -1,
                 'min_p': 0.0,
-                'temperature': 1.0,
+                'temperature': 0.6,
                 'n': 1
             }
         elif not do_sample:
@@ -206,11 +206,41 @@ class vLLMRollout(BaseRollout):
         # TODO(sgm): disable logprob when recompute_log_prob is enable
         # if n = 1: (bs, response_length) ; if n > 1: (bs * n, response_length)
         response = output[0].to(idx.device)
-        log_probs = output[1].to(idx.device)
+        # log_probs = output[1].to(idx.device)
+
+
+        for i in range(response.shape[0]):
+            deduped_response = dedupe_tensor(response[i])
+            response[i, :deduped_response.shape[0]] = deduped_response
+            response[i, deduped_response.shape[0]:] = eos_token_id
+
+        # 特殊处理，针对训练过程中容易崩的序列：检查回答中的n_gram，n=1->100，只要某个n_gram连续出现了10次，就只保留第一次，手动增强训练稳定性
+        # 针对response tensor的处理方式：处理好后将前序部分赋值到response上，后面的全部填pad
+        # for i in range(len(response)):
+        #     for n in range(1,500):
+        #         # n_grams = [response[i][j:j+n] for j in range(0,len(response[i]),n)]
+        #         n_grams = torch.split(response[i],n)
+        #         last_ngram = tuple()
+        #         last_ngram_count = 0
+        #         final_ngrams = []
+        #         for n_gram in n_grams:
+        #             n_gram_t = tuple(n_gram.cpu().numpy().tolist())
+        #             if n_gram_t == last_ngram:
+        #                 last_ngram_count += 1
+        #             else:
+        #                 if last_ngram_count>=10:
+        #                     final_ngrams = final_ngrams[:-last_ngram_count+1]
+        #                     print('removed replication')
+        #                 last_ngram_count = 1
+        #                 last_ngram = n_gram_t
+        #             final_ngrams.append(n_gram)
+        #         final_response = torch.cat(final_ngrams, dim=0)
+        #         response[i, :len(final_response)] = final_response
+        #         response[i, len(final_response):] = self.pad_token_id
 
         if response.shape[1] < self.config.response_length:
             response = pad_sequence_to_length(response, self.config.response_length, self.pad_token_id)
-            log_probs = pad_sequence_to_length(log_probs, self.config.response_length, self.pad_token_id)
+            # log_probs = pad_sequence_to_length(log_probs, self.config.response_length, self.pad_token_id)
 
         if self.config.n > 1 and do_sample and not is_validating:
             idx = idx.repeat_interleave(self.config.n, dim=0)
@@ -249,3 +279,58 @@ class vLLMRollout(BaseRollout):
             self.inference_engine.free_cache_engine()
 
         return DataProto(batch=batch)
+
+def dedupe_tensor(x: torch.Tensor, threshold: int = 5) -> torch.Tensor:
+    """
+    对 1D long tensor x 去除“重复块”：
+      - 遍历可能的块长度 n（1..499）
+      - 将 x[:m*n] 切成 m 个长度为 n 的块，m = L//n
+      - 找到相邻块完全相同的长段（run length >= threshold）
+      - 对每段重复，只保留第一个块，丢弃后续块
+      - 重建 tensor，并拼回末尾剩余的 x[m*n:]
+    """
+    L = x.size(0)
+    for n in range(1, 1000):
+        m = L // n
+        if m <= threshold:
+            continue
+
+        # 切块（保留尾部到最后再补回）
+        main = x[: m * n].view(m, n)
+        tail = x[m * n :]
+
+        # 找相邻块相等
+        eq = (main[1:] == main[:-1]).all(dim=1)  # length = m-1
+        if not eq.any():
+            continue
+
+        eq_int = eq.int()
+        # 前后都 pad 一个 0，方便捕捉到开头和结尾的边界
+        padded = torch.cat([
+            eq_int.new_zeros(1),
+            eq_int,
+            eq_int.new_zeros(1),
+        ])  # length = m+1
+        dif = torch.diff(padded)  # length = (m+1)-1 = m
+
+        starts = (dif == 1).nonzero(as_tuple=True)[0]      # run 开始 (在 eq_int 上)
+        ends   = (dif == -1).nonzero(as_tuple=True)[0] - 1 # run 结束 (调整到 eq_int)
+
+        mask = torch.ones(m, dtype=torch.bool, device=x.device)
+        for s, e in zip(starts.tolist(), ends.tolist()):
+            run_len = e - s + 1  # eq_int 上连续为 1 的长度
+            if run_len >= threshold:
+                # eq[s:e] 为真表示 blocks[s]…blocks[e+1] 全都一样
+                # 只保留 blocks[s]，丢弃后续 blocks[s+1]…blocks[e+1]
+                drop_idx = torch.arange(s+1, e+2, device=x.device)
+                mask[drop_idx] = False
+
+        if mask.all():
+            continue
+
+        # 用 mask 重建 main，再拼回 tail
+        kept = main[mask].reshape(-1)
+        x = torch.cat([kept, tail], dim=0)
+        L = x.size(0)
+
+    return x

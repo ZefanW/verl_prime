@@ -22,6 +22,7 @@ from torch.distributed.device_mesh import init_device_mesh
 import verl.utils.torch_functional as verl_F
 from omegaconf import DictConfig, open_dict
 from verl import DataProto
+from verl.models.transformers.monkey_patch import apply_monkey_patch
 from verl.single_controller.base import Worker
 from verl.single_controller.base.decorator import register, Dispatch
 from verl.utils import hf_tokenizer
@@ -120,8 +121,8 @@ class PRIMERewardModelWorker(Worker):
             check_model_support_rmpad(reward_model_config.model_type)
 
         # if use_remove_padding and self.ulysses_sequence_parallel_size > 1:
-        from verl.models.transformers.monkey_patch import apply_monkey_patch
-        apply_monkey_patch(reward_model_config, verbose=True)
+        # from verl.models.transformers.monkey_patch import apply_monkey_patch
+        # apply_monkey_patch(reward_model_config, verbose=True)
 
         init_context = get_init_weight_context_manager(use_meta_tensor=not reward_model_config.tie_word_embeddings)
         with init_context(), warnings.catch_warnings():
@@ -136,6 +137,13 @@ class PRIMERewardModelWorker(Worker):
 
             # some parameters may not in torch_dtype
             reward_module.to(torch_dtype)
+
+            apply_monkey_patch(
+                model=reward_module,
+                ulysses_sp_size=self.ulysses_sequence_parallel_size,
+                use_remove_padding=self.config.model.get("use_remove_padding", False),
+                use_fused_kernels=self.config.model.get("use_fused_kernels", False),
+            )
 
             if config.model.get('enable_gradient_checkpointing', False):
                 reward_module.gradient_checkpointing_enable(gradient_checkpointing_kwargs={'use_reentrant': False})

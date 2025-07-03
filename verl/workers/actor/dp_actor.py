@@ -212,14 +212,17 @@ class DataParallelPPOActor(BasePPOActor):
             micro_batches = batch.split(micro_batch_size)
 
         log_probs_lst = []
+        entropy_lst = []
         for micro_batch in micro_batches:
             if isinstance(micro_batch, DataProto):
                 micro_batch = {**micro_batch.batch, **micro_batch.non_tensor_batch}
 
             with torch.no_grad():
-                _, log_probs = self._forward_micro_batch(micro_batch, temperature=temperature)
+                entropy, log_probs = self._forward_micro_batch(micro_batch, temperature=temperature)
             log_probs_lst.append(log_probs)
+            entropy_lst.append(entropy)
         log_probs = torch.concat(log_probs_lst, dim=0)
+        entropy = torch.concat(entropy_lst, dim=0)
 
         if use_dynamic_bsz:
             indices = list(itertools.chain.from_iterable(indices))
@@ -227,7 +230,7 @@ class DataParallelPPOActor(BasePPOActor):
             revert_indices = torch.tensor(get_reverse_idx(indices), dtype=torch.long)
             log_probs = log_probs[revert_indices]
 
-        return log_probs
+        return log_probs, entropy
 
     def update_policy(self, data: DataProto):
         # make sure we are in training mode
@@ -240,8 +243,12 @@ class DataParallelPPOActor(BasePPOActor):
         select_keys = ['responses', 'input_ids', 'attention_mask', 'position_ids', 'old_log_probs', 'advantages']
         if self.config.use_kl_loss:
             select_keys.append('ref_log_prob')
+        if self.config.get('token_filter_type', None) is not None:
+            select_keys.append('filtered_mask')
         batch = data.select(batch_keys=select_keys).batch
         has_multi_modal_inputs = 'multi_modal_inputs' in data.non_tensor_batch.keys()
+
+        adv_estimator = data.meta_info.get('adv_estimator',None)
 
         # Split to make minibatch iterator for updating the actor
         # See PPO paper for details. https://arxiv.org/abs/1707.06347
@@ -298,19 +305,24 @@ class DataParallelPPOActor(BasePPOActor):
                 entropy, log_prob = self._forward_micro_batch(micro_batch=data, temperature=temperature)
 
                 # do token filtration here!
-                if self.config.get('token_filter_type', None) is not None:
-                    if self.config.token_filter_type == 'entropy':
-                        percentage = self.config.token_filter_percentage
-                        threshold = torch.quantile(entropy[response_mask==1], 1-percentage)
-                        loss_mask = entropy>=threshold
-                    elif self.config.token_filter_type == 'norm':
-                        percentage = self.config.token_filter_percentage
-                        threshold = torch.quantile((1-log_prob)[response_mask==1], 1-percentage)
-                        loss_mask = entropy>=threshold
-                    else:
-                        raise NotImplementedError
-                else:
-                    loss_mask = None
+                # if self.config.get('token_filter_type', None) is not None:
+                #     if self.config.token_filter_type == 'entropy':
+                #         percentage = self.config.token_filter_percentage
+                #         threshold = torch.quantile(entropy[response_mask==1], 1-percentage)
+                #         loss_mask = entropy>=threshold
+                #     elif self.config.token_filter_type == 'norm':
+                #         percentage = self.config.token_filter_percentage
+                #         threshold = torch.quantile((1-log_prob)[response_mask==1], 1-percentage)
+                #         loss_mask = entropy>=threshold
+                #     else:
+                #         raise NotImplementedError
+                # else:
+                #     loss_mask = None
+                if self.config.get('token_filter_type',None) is not None:
+                    response_mask = data['filtered_mask']
+
+                # if adv_estimator == 'single_upv':
+                #     print('now getting')
 
                 if self.config.get('clip_high', None)=='adaptive_bound':
                     pg_loss, pg_clipfrac, ppo_kl = core_algos.compute_policy_loss_adaptive(old_log_prob=old_log_prob,
@@ -324,7 +336,7 @@ class DataParallelPPOActor(BasePPOActor):
                                                                                   advantages=advantages,
                                                                                   eos_mask=response_mask,
                                                                                   clipranges=clip_ratios,
-                                                                                  loss_mask=loss_mask)
+                                                                                  )
                 # compute entropy loss from entropy
                 entropy_loss = verl_F.masked_mean(entropy, response_mask)
 

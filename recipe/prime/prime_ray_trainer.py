@@ -27,9 +27,11 @@ import math
 import numpy as np
 import torch
 from omegaconf import OmegaConf, open_dict
+from torch.distributed.fsdp import StateDictType, FullStateDictConfig
 
 from verl import DataProto
 from verl.single_controller.ray import RayWorkerGroup
+from verl.trainer.ppo import core_algos
 from verl.trainer.ppo.ray_trainer import RayPPOTrainer
 from verl.trainer.ppo.ray_trainer import Role, WorkerType, ResourcePoolManager, reduce_metrics, _compute_response_info, \
     _timer
@@ -51,6 +53,16 @@ def compute_advantage(data: DataProto, adv_estimator, config, dpo_acc=0.5):
                                                                              config.actor_rollout_ref.rollout.n, config)
         data.batch['advantages'] = advantages
         data.batch['returns'] = returns
+    # if adv_estimator == 'grpo':
+    #     responses = data.batch['responses']
+    #     index = data.non_tensor_batch['uid']
+    #     response_length = responses.size(-1)
+    #     attention_mask = data.batch['attention_mask']
+    #     response_mask = attention_mask[:, -response_length:]
+    #     advantages, returns = core_algos.compute_grpo_outcome_advantage(data, response_mask,
+    #                                                                          config.actor_rollout_ref.rollout.n, config)
+    #     data.batch['advantages'] = advantages
+    #     data.batch['returns'] = returns
     elif adv_estimator == 'reinforce_plus_plus':
         responses = data.batch['responses']
         response_length = responses.size(-1)
@@ -117,6 +129,39 @@ def compute_advantage(data: DataProto, adv_estimator, config, dpo_acc=0.5):
         attention_mask = data.batch['attention_mask']
         response_mask = attention_mask[:, -response_length:]
         advantages, returns, metrics = prime_core_algos.compute_middle_prime_advantage_return(data, response_mask,
+                                                                                              config.actor_rollout_ref.rollout.n,
+                                                                                              config, linear=True)
+        data.batch['advantages'] = advantages
+        data.batch['returns'] = returns
+        data.meta_info['adv_metrics'] = metrics
+    elif adv_estimator == 'simple_upv':
+        responses = data.batch['responses']
+        response_length = responses.size(-1)
+        attention_mask = data.batch['attention_mask']
+        response_mask = attention_mask[:, -response_length:]
+        advantages, returns, metrics = prime_core_algos.compute_simple_upv(data, response_mask,
+                                                                                              config.actor_rollout_ref.rollout.n,
+                                                                                              config, linear=True)
+        data.batch['advantages'] = advantages
+        data.batch['returns'] = returns
+        data.meta_info['adv_metrics'] = metrics
+    elif adv_estimator == 'single_upv': # this does not require a reward model. it calculates value based on pi_old and the pi_ref, and pi_ref is updated during training.
+        responses = data.batch['responses']
+        response_length = responses.size(-1)
+        attention_mask = data.batch['attention_mask']
+        response_mask = attention_mask[:, -response_length:]
+        advantages, returns, metrics = prime_core_algos.compute_single_upv(data, response_mask,
+                                                                                              config.actor_rollout_ref.rollout.n,
+                                                                                              config, linear=True)
+        data.batch['advantages'] = advantages
+        data.batch['returns'] = returns
+        data.meta_info['adv_metrics'] = metrics
+    elif adv_estimator == 'adaptive_upv':
+        responses = data.batch['responses']
+        response_length = responses.size(-1)
+        attention_mask = data.batch['attention_mask']
+        response_mask = attention_mask[:, -response_length:]
+        advantages, returns, metrics = prime_core_algos.compute_adaptive_upv(data, response_mask,
                                                                                               config.actor_rollout_ref.rollout.n,
                                                                                               config, linear=True)
         data.batch['advantages'] = advantages
@@ -403,10 +448,10 @@ class RayPRIMETrainer(RayPPOTrainer):
 
         # highlight: 由于一些我修复不了的bug，dataloader state不再会加载了
 
-        # dataloader_local_path = os.path.join(global_step_folder, 'data.pt')
-        # self.train_dataloader = torch.load(dataloader_local_path)
-        # if isinstance(self.train_dataloader.dataset, RLHFDataset):
-        #     self.train_dataloader.dataset.resume_dataset_state()
+        dataloader_local_path = os.path.join(global_step_folder, 'data.pt')
+        self.train_dataloader = torch.load(dataloader_local_path, weights_only=False)
+        if isinstance(self.train_dataloader.dataset, RLHFDataset):
+            self.train_dataloader.dataset.resume_dataset_state()
 
     def fit(self):
         """
@@ -592,6 +637,10 @@ class RayPRIMETrainer(RayPPOTrainer):
                         metrics.update(
                             {'reward_model/td0_loss': compute_return_smoothness(batch.batch['returns']).item()})
 
+                    if self.config.algorithm.adv_estimator == 'single_upv':
+                        print('extracting pi_old state dict')
+                        fsdp_state = self.actor_rollout_wg.get_actor_state_dict()
+
                     # update actor. if warmup is toggled on, skip this step
                     # because the batch might be changed, use another variable pointing at the current batch
                     batch_ = batch
@@ -643,7 +692,13 @@ class RayPRIMETrainer(RayPPOTrainer):
 
                     old_batches.append(batch)
                     old_batches = old_batches[-8:]
-                    # validate
+
+                    # 部分方法需要更新ref model
+                    if self.config.algorithm.adv_estimator == 'single_upv':
+                        print('updating reference model to pi_old')
+                        self.ref_policy_wg.load_ref_state_dict(fsdp_state)
+
+                        # validate
                     if self.val_reward_fn is not None and self.config.trainer.test_freq > 0 and \
                         self.global_steps % self.config.trainer.test_freq == 0:
                         with _timer('testing', timing_raw):
