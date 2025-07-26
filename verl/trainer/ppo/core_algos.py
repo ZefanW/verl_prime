@@ -205,7 +205,88 @@ def compute_rloo_outcome_advantage(token_level_rewards: torch.Tensor,
     metrics = compute_value_model_metrics(token_level_rewards.sum(dim=-1, keepdim=True).tile([1,response_length])*eos_mask-scores, eos_mask, token_level_rewards.sum(dim=-1))
     return verl_F.masked_whiten(scores, eos_mask), scores, metrics
 
+def compute_rloo_mask_outcome_advantage(token_level_rewards: torch.Tensor, old_entropy: torch.Tensor,
+                                   eos_mask: torch.Tensor,
+                                   index: torch.Tensor,
+                                   epsilon: float = 1e-6):
+    """
+    根据entropy给adv加mask，只有正确答案会被加mask。所有导致后续推导高熵的token都会被mask掉
+    """
+    response_length = token_level_rewards.shape[-1]
+    scores = token_level_rewards.sum(dim=-1)
 
+    id2score = defaultdict(list)
+    id2mean = {}
+
+    with torch.no_grad():
+        bsz = scores.shape[0]
+        for i in range(bsz):
+            id2score[index[i]].append(scores[i])
+        for idx in id2score:
+            if len(id2score[idx]) == 1:
+                id2mean[idx] = torch.tensor(0.0)
+            elif len(id2score[idx]) > 1:
+                id2mean[idx] = torch.mean(torch.tensor(id2score[idx]))
+            else:
+                raise ValueError(f"no score in prompt index: {idx}")
+        for i in range(bsz):
+            response_num = len(id2score[index[i]])
+            if response_num > 1:
+                scores[i] = scores[i] * response_num / (response_num -
+                                                        1) - id2mean[index[i]] * response_num / (response_num - 1)
+        scores = scores.unsqueeze(-1).tile([1, response_length]) * eos_mask
+
+    entropy_mask = eos_mask.clone()
+
+    kth = int(eos_mask.sum()*(1-0.2))
+
+    threshold = torch.kthvalue(old_entropy[eos_mask == 1], kth)[
+        0].item()
+    high_ent_token_mask = old_entropy>=threshold
+
+    # 平移操作
+    for offset in range(1,5):
+        entropy_mask[:,:-offset] = torch.where(high_ent_token_mask[:,offset:],torch.zeros_like(entropy_mask[:,:-offset]), entropy_mask[:,:-offset])
+    # entropy_mask[:,:-1][high_ent_token_mask[:,1:]] = 0
+    # entropy_mask[:,:-2][high_ent_token_mask[:,2:]] = 0
+    # entropy_mask[:,:-3][high_ent_token_mask[:,3:]] = 0
+    # entropy_mask[:,:-4][high_ent_token_mask[:,4:]] = 0
+    # entropy_mask[scores<0] = 1
+    # 为了对冲token level reward，正例的reward会进一步提升一点
+    scale_factor = (entropy_mask.sum(dim=-1)+1) / (eos_mask.sum(dim=-1)+1)
+    scores /= scale_factor.unsqueeze(-1)
+
+    metrics = compute_value_model_metrics(token_level_rewards.sum(dim=-1, keepdim=True).tile([1,response_length])*eos_mask-scores, eos_mask, token_level_rewards.sum(dim=-1))
+    return verl_F.masked_whiten(scores, entropy_mask), scores, metrics
+
+def compute_endorm_outcome_advantage(token_level_rewards: torch.Tensor, token_log_probs: torch.Tensor,
+                                   eos_mask: torch.Tensor,
+                                   index: torch.Tensor, n_samples = 8):
+    """
+    all correct answers get a base 1 reward
+    for those who have larger sum logprob, they get a reward at most 1
+    """
+    response_length = token_level_rewards.shape[-1]
+    scores = token_level_rewards.sum(dim=-1)
+
+    token_log_probs_sum = (token_log_probs*eos_mask).sum(dim=-1)
+    token_log_probs_sum/=(eos_mask.sum(dim=-1))
+
+    for i in range(0, len(token_level_rewards), n_samples):
+        if scores[i:i+n_samples].sum()==0:
+            continue
+        token_log_probs_sum_cur = token_log_probs_sum[i:i+n_samples][scores[i:i+n_samples]>0]
+        log_probs_range = (token_log_probs_sum_cur.min(), token_log_probs_sum_cur.max())
+        # print(log_probs_range)
+        aux_reward = (token_log_probs_sum[i:i+n_samples] - log_probs_range[0])/(log_probs_range[1] - log_probs_range[0]+1e-6)
+        aux_reward[scores[i:i+n_samples] <= 0] = 0
+        # print(aux_reward)
+        scores[i:i+n_samples] += aux_reward
+
+    scores = scores.unsqueeze(-1).tile([1, response_length]) * eos_mask
+
+    metrics = compute_value_model_metrics(token_level_rewards.sum(dim=-1, keepdim=True).tile([1,response_length])*eos_mask-scores, eos_mask, token_level_rewards.sum(dim=-1))
+    return verl_F.masked_whiten(scores, eos_mask), scores, metrics
 def compute_reinforce_plus_plus_outcome_advantage(token_level_rewards: torch.Tensor, eos_mask: torch.Tensor,
                                                   gamma: torch.Tensor):
     """

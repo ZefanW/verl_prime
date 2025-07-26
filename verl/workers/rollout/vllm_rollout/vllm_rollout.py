@@ -45,6 +45,19 @@ from vllm import SamplingParams
 # 3. simplify init logics
 
 
+summarize_prompt_format="""
+You are given a problem and a detailed solution. Your task is to produce a concise answer that mirrors the tone and structure of the original write-up. 
+# Original Question:
+{}
+# Original (Verbose) Answer:
+{}
+# Task:
+Please read the detailed solution above and then write a concise answer that:
+1. Includes just enough thought process
+2. States the final result in the same format as the original answer
+3. Preserves the style and structure of the original.
+"""
+
 # NOTE(sgm): add for verl. We can optimize it by making the dataloader yield List[int] without padding.
 def _pre_process_inputs(pad_token_id, prompt_token_ids: torch.Tensor) -> List[int]:
     # remove the left padding in the prompt token_id
@@ -208,12 +221,35 @@ class vLLMRollout(BaseRollout):
         response = output[0].to(idx.device)
         # log_probs = output[1].to(idx.device)
 
+        if self.config.get('dedup', True):
 
-        for i in range(response.shape[0]):
-            deduped_response = dedupe_tensor(response[i])
-            response[i, :deduped_response.shape[0]] = deduped_response
-            response[i, deduped_response.shape[0]:] = eos_token_id
+            for i in range(response.shape[0]):
+                deduped_response = dedupe_tensor(response[i])
+                response[i, :deduped_response.shape[0]] = deduped_response
+                response[i, deduped_response.shape[0]:] = eos_token_id
 
+        if self.config.get('summarize', False) and not is_validating:
+            # 用一个写死的prompt重新生成
+            print('summarizing! ')
+            tokenizer = self.inference_engine.get_tokenizer()
+            original_answers = tokenizer.decode(response.cpu().numpy().tolist(), skip_special_tokens=True)
+            prompts_raw_questions = [prompts.non_tensor_batch['raw_prompt'][i][-1]['content'] for i in range(len(prompts))]
+            original_prompts = tokenizer.decode(prompts_raw_questions, skip_special_tokens=True)
+            summarize_prompt_list = []
+            for i in range(len(original_prompts)):
+                summarize_prompt_list.append([{'role':'user','content':summarize_prompt_format.format(original_prompts[i], original_answers[i])}])
+            summarize_prompt_token_ids = tokenizer.apply_chat_template(summarize_prompt_list, tokenize=True, add_generation_prompt=True)
+            # 爆长度的换回原来的prompt
+            for i in range(len(summarize_prompt_token_ids)):
+                if len(summarize_prompt_token_ids[i]) >= self.config.max_response_length-10:
+                    summarize_prompt_token_ids[i] = idx_list[i]
+            with self.update_sampling_params(**kwargs):
+                output = self.inference_engine.generate(
+                    prompts=None,  # because we have already convert it to prompt token id
+                    sampling_params=self.sampling_params,
+                    prompt_token_ids=summarize_prompt_token_ids,
+                    use_tqdm=False)
+            response = output[0].to(idx.device)
         # 特殊处理，针对训练过程中容易崩的序列：检查回答中的n_gram，n=1->100，只要某个n_gram连续出现了10次，就只保留第一次，手动增强训练稳定性
         # 针对response tensor的处理方式：处理好后将前序部分赋值到response上，后面的全部填pad
         # for i in range(len(response)):

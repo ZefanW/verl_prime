@@ -24,12 +24,15 @@ When working with Megatron:
 - Do inference in tp. pp is treated as additional dp
 - After inference, all the parameters that doesn't belong to this pp rank is freed.
 """
+import asyncio
 from concurrent.futures import ProcessPoolExecutor
 from itertools import chain
 
 import numpy as np
 from typing import List
 from contextlib import contextmanager
+
+import vllm.sequence
 from omegaconf import DictConfig
 import torch
 import torch.distributed
@@ -37,16 +40,32 @@ from tensordict import TensorDict
 from torch import nn
 from typing import Any, Union
 from verl import DataProto
+from verl.utils.reward_score import _default_compute_score
+from verl.utils.reward_score.prime_math import match_answer, math_normalize, _normalize
 from verl.utils.torch_functional import get_eos_mask, pad_2d_list_to_length
+from verl.workers.reward_manager import PrimeRewardManager
+from verl.workers.reward_manager.prime import parallel_compute_score_async
 from verl.workers.rollout.base import BaseRollout
 from vllm.distributed import parallel_state as vllm_ps
 from vllm import LLM, SamplingParams
 from verl.third_party.vllm import vllm_version
 import os
+
+from verl.workers.rollout.vllm_rollout.vllm_rollout import summarize_prompt_format
+
+
 # TODO
 # 1. support pp in vllm
 # 2. passing tokenizer is not necessary? no encoding/decoding is happending here
 # 3. simplify init logics
+
+def extract_math(sequence):
+    _, extracted_answer = match_answer(sequence)
+    normalized_answer = math_normalize.normalize_answer(extracted_answer)
+    normalized_answer2 = _normalize(normalized_answer)
+    if normalized_answer2 is None or len(normalized_answer2) == 0:
+        normalized_answer2 = None
+    return normalized_answer2
 
 
 # NOTE(sgm): add for verl. We can optimize it by making the dataloader yield List[int] without padding.
@@ -123,7 +142,7 @@ class vLLMRollout(BaseRollout):
 
         kwargs = dict(
             n=1,
-            logprobs=0,  # can be set to 0 and let actor to recompute
+            logprobs=1,  # can be set to 0 and let actor to recompute
             max_tokens=config.response_length,
         )
 
@@ -223,35 +242,116 @@ class vLLMRollout(BaseRollout):
         # if n = 1: (bs, response_length) ; if n > 1: (bs * n, response_length)
 
         response = []
+        logprobs = []
         for output in outputs:
             for sample_id in range(len(output.outputs)):
                 response.append(output.outputs[sample_id].token_ids)
-
+                logprobs.append(output.outputs[sample_id].logprobs)
         # with ProcessPoolExecutor(max_workers=16) as pool:
         #     response = list(pool.map(dedup_one, response))
 
-        for i in range(len(response)):
-            response[i] = dedupe_tensor(torch.tensor(response[i])).numpy().tolist()
+        if self.config.get('dedup', True):
+            for i in range(len(response)):
+                response[i] = dedupe_tensor(torch.tensor(response[i])).numpy().tolist()
 
-        # for i in range(len(response)):
-        #     for n in range(1,500):
-        #         n_grams = [response[i][j:j+n] for j in range(0,len(response[i]),n)]
-        #         last_ngram = tuple()
-        #         last_ngram_count = 0
-        #         final_ngrams = []
-        #         for n_gram in n_grams:
-        #             n_gram_t = tuple(n_gram)
-        #             if n_gram_t == last_ngram:
-        #                 last_ngram_count += 1
-        #             else:
-        #                 if last_ngram_count>=10:
-        #                     final_ngrams = final_ngrams[:-last_ngram_count+1]
-        #                     print('removed replication')
-        #                 last_ngram_count = 1
-        #                 last_ngram = n_gram_t
-        #             final_ngrams.append(n_gram)
-        #         final_response = sum(final_ngrams, [])
-        #         response[i] = final_response
+        # 开始summarize前，由于后续部分操作per-prompt进行，将一些key interleave一下
+        if self.config.n > 1 and do_sample and not is_validating:
+            if 'data_source' in non_tensor_batch.keys():
+                non_tensor_batch['data_source'] = _repeat_interleave(non_tensor_batch['data_source'],
+                                                                            self.config.n)
+            if 'reward_model' in non_tensor_batch.keys():
+                non_tensor_batch['reward_model'] = _repeat_interleave(non_tensor_batch['reward_model'],
+                                                                     self.config.n)
+
+        if self.config.get('summarize', False) and not is_validating:
+            # 用一个写死的prompt重新生成。注意prompt部分所有参数需要repeat_interleave到n
+            # 前检查
+            # 1. 加入答案校验，只有正确回答允许被摘要
+            # 2. 只有非最短的正确回答可以被摘要
+            # 后检查（暂时只加1）
+            # 1. 摘要前后应该能提取到相同答案
+            # 2. 摘要长度不能低于最短的正确回答，prompt里是否需要写明白不能低于多少词
+            # 3. 不允许低置信度摘要，logprob不能低于原始回答
+            print('summarizing! ')
+            tokenizer = self.inference_engine.get_tokenizer()
+            original_answers = tokenizer.batch_decode(response, skip_special_tokens=True)
+            prompts_raw_questions = [prompts.non_tensor_batch['raw_prompt'][i][-1]['content'] for i in range(len(prompts))]
+            # original_prompts = tokenizer.batch_decode(prompts_raw_questions, skip_special_tokens=True)
+            original_prompts = _repeat_interleave(prompts_raw_questions, self.config.n)
+            summarize_prompt_list = []
+            for i in range(len(original_prompts)):
+                summarize_prompt_list.append([{'role':'user','content':summarize_prompt_format.format(original_prompts[i], original_answers[i])}])
+            summarize_prompt_token_ids = tokenizer.apply_chat_template(summarize_prompt_list, tokenize=True, add_generation_prompt=True)
+
+            data_sources = non_tensor_batch['data_source']
+            ground_truth = [ntb['ground_truth'] for ntb in non_tensor_batch['reward_model']]
+
+            try:
+                scores = asyncio.run(
+                    parallel_compute_score_async(_default_compute_score,
+                                                 original_answers,
+                                                 ground_truth,
+                                                 data_sources,
+                                                 num_processes=64))
+            except asyncio.TimeoutError as e:
+                print('Global timeout in reward computing! Setting all as 0.')
+                scores = [0. for _ in range(len(original_answers))]
+            except Exception as e:
+                print(f"Unexpected error in batched reward computing. Setting all as 0.: {e}")
+                scores = [0. for _ in range(len(original_answers))]
+
+            summarize_prompt_lengths = [len(s) for s in summarize_prompt_token_ids]
+
+            summarize_id = []
+            for i in range(len(summarize_prompt_token_ids)):
+                rangemin = int(i//self.config.n)*self.config.n
+                rangemax = rangemin+self.config.n
+                if scores[i]>0 \
+                        and len(summarize_prompt_token_ids[i])< self.config.response_length-10:
+                    summarize_id.append(i)
+
+            chosen_summarize_prompt_token_ids = [summarize_prompt_token_ids[i] for i in summarize_id]
+
+            if chosen_summarize_prompt_token_ids.__len__()>0:
+                kwargs['n']=1
+                kwargs['temperature']=0
+                with self.update_sampling_params(**kwargs):
+                    summarize_outputs = self.inference_engine.generate(
+                        prompts=None,  # because we have already convert it to prompt token id
+                        sampling_params=self.sampling_params,
+                        prompt_token_ids=chosen_summarize_prompt_token_ids,
+                        use_tqdm=False)
+                # old_response=response
+                old_logprobs=logprobs
+                summarize_response = []
+                logprobs = []
+                for output in summarize_outputs:
+                    for sample_id in range(len(output.outputs)):
+                        summarize_response.append(output.outputs[sample_id].token_ids)
+                        # logprobs.append(output.outputs[sample_id].logprobs)
+
+                # old_response_str = tokenizer.batch_decode(old_response, skip_special_tokens=True)
+                summarize_response_str = tokenizer.batch_decode(summarize_response, skip_special_tokens=True)
+
+                for i, (id, resp) in enumerate(zip(summarize_id,summarize_response_str)):
+                    valid_summarize = True
+                    old_answer = extract_math(original_answers[id])
+                    answer = extract_math(resp)
+                    if old_answer is None or answer is None or old_answer != answer:
+                        valid_summarize = False
+
+                    # if self.config.get('summarize_confident', False):  # summarize结果必须比原来的结果有更高的logprob下限
+                    #     # logprobs: Optional[List[Dict[int, float]]],
+                    #     answer_logprob = min([list(logprobdict.values())[0].logprob for logprobdict in logprobs[i]])
+                    #     old_answer_logprob = min([list(logprobdict.values())[0].logprob for logprobdict in old_logprobs[i]])
+                    #
+                    #     if answer_logprob<old_answer_logprob:
+                    #         valid_summarize = False
+
+                    if valid_summarize:
+                        response[id] = summarize_response[i]
+
+
 
         response = pad_2d_list_to_length(response, self.pad_token_id,
                                          max_length=self.config.response_length).to(idx.device)
@@ -263,6 +363,9 @@ class vLLMRollout(BaseRollout):
             batch_size = batch_size * self.config.n
             if 'multi_modal_inputs' in non_tensor_batch.keys():
                 non_tensor_batch['multi_modal_inputs'] = _repeat_interleave(non_tensor_batch['multi_modal_inputs'],
+                                                                            self.config.n)
+            if 'raw_prompt' in non_tensor_batch.keys():
+                non_tensor_batch['raw_prompt'] = _repeat_interleave(non_tensor_batch['raw_prompt'],
                                                                             self.config.n)
 
         seq = torch.cat([idx, response], dim=-1)

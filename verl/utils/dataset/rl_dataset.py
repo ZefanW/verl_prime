@@ -87,7 +87,7 @@ class RLHFDataset(Dataset):
                  filter_prompts=True,
                  cache_dir='~/.cache/verl/rlhf',
                  chat_template_func=None,
-                 return_raw_chat=False,
+                 return_raw_chat=True,
                  truncation='error',
                  filter_overlong_prompts=True):
         if not isinstance(parquet_files, (List, ListConfig)):

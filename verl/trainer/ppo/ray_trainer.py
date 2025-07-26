@@ -165,13 +165,14 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
     # prepare response group
     # TODO: add other ways to estimate advantages
 
-    values = data.batch['values']
+
     responses = data.batch['responses']
     response_length = responses.size(-1)
     attention_mask = data.batch['attention_mask']
     response_mask = attention_mask[:, -response_length:]
     token_level_rewards = data.batch['token_level_rewards']
     if adv_estimator == AdvantageEstimator.GAE:
+        values = data.batch['values']
         if config.algorithm.get('rloo_bound', False): # td1 error只能比rloo小，不能更大
             print('applying rloo bound')
             index = data.non_tensor_batch['uid']
@@ -248,6 +249,34 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
         advantages, returns, metrics = core_algos.compute_rloo_outcome_advantage(token_level_rewards=token_level_rewards,
                                                                         eos_mask=response_mask,
                                                                         index=index)
+        data.batch['advantages'] = advantages
+        data.batch['returns'] = returns
+        data.meta_info['adv_metrics'] = metrics
+    elif adv_estimator == 'rloo_mask':
+        token_level_rewards = data.batch['token_level_rewards']
+        index = data.non_tensor_batch['uid']
+        responses = data.batch['responses']
+        response_length = responses.size(-1)
+        attention_mask = data.batch['attention_mask']
+        response_mask = attention_mask[:, -response_length:]
+        old_entropy = data.batch['old_entropy']
+        advantages, returns, metrics = core_algos.compute_rloo_mask_outcome_advantage(token_level_rewards=token_level_rewards, old_entropy = old_entropy,
+                                                                        eos_mask=response_mask,
+                                                                        index=index)
+        data.batch['advantages'] = advantages
+        data.batch['returns'] = returns
+        data.meta_info['adv_metrics'] = metrics
+    elif adv_estimator == 'endorm':
+        token_level_rewards = data.batch['token_level_rewards']
+        index = data.non_tensor_batch['uid']
+        responses = data.batch['responses']
+        response_length = responses.size(-1)
+        attention_mask = data.batch['attention_mask']
+        response_mask = attention_mask[:, -response_length:]
+        token_log_probs = data.batch['old_log_probs']
+        advantages, returns, metrics = core_algos.compute_endorm_outcome_advantage(token_level_rewards=token_level_rewards, token_log_probs=token_log_probs,
+                                                                        eos_mask=response_mask,
+                                                                        index=index, n_samples = config.actor_rollout_ref.rollout.n)
         data.batch['advantages'] = advantages
         data.batch['returns'] = returns
         data.meta_info['adv_metrics'] = metrics
@@ -683,12 +712,12 @@ class RayPPOTrainer(object):
             if 'multi_modal_inputs' in test_batch.non_tensor_batch.keys():
                 test_gen_batch = test_batch.pop(
                     batch_keys=['input_ids', 'attention_mask', 'position_ids'],
-                    non_tensor_batch_keys=['raw_prompt_ids', 'multi_modal_data', 'multi_modal_inputs'],
+                    non_tensor_batch_keys=['raw_prompt_ids', 'multi_modal_data', 'multi_modal_inputs', 'raw_prompt'],
                 )
             else:
                 test_gen_batch = test_batch.pop(
                     batch_keys=['input_ids', 'attention_mask', 'position_ids'],
-                    non_tensor_batch_keys=['raw_prompt_ids'],
+                    non_tensor_batch_keys=['raw_prompt_ids', 'raw_prompt'],
                 )
 
             test_gen_batch.meta_info = {
@@ -961,12 +990,12 @@ class RayPPOTrainer(object):
                 if 'multi_modal_inputs' in batch.non_tensor_batch.keys():
                     gen_batch = batch.pop(
                         batch_keys=['input_ids', 'attention_mask', 'position_ids'],
-                        non_tensor_batch_keys=['raw_prompt_ids', 'multi_modal_data', 'multi_modal_inputs'],
+                        non_tensor_batch_keys=['raw_prompt_ids', 'multi_modal_data', 'multi_modal_inputs',  'raw_prompt','data_source','reward_model'],
                     )
                 else:
                     gen_batch = batch.pop(
                         batch_keys=['input_ids', 'attention_mask', 'position_ids'],
-                        non_tensor_batch_keys=['raw_prompt_ids'],
+                        non_tensor_batch_keys=['raw_prompt_ids', 'raw_prompt', 'data_source','reward_model'],
                     )
 
                 is_last_step = self.global_steps >= self.total_training_steps

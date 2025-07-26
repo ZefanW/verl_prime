@@ -506,7 +506,17 @@ class RayPRIMETrainer(RayPPOTrainer):
                     self.config.reward_model.model.beta_train = real_beta
 
                 # pop those keys for generation
-                gen_batch = batch.pop(batch_keys=['input_ids', 'attention_mask', 'position_ids'])
+                if 'multi_modal_inputs' in batch.non_tensor_batch.keys():
+                    gen_batch = batch.pop(
+                        batch_keys=['input_ids', 'attention_mask', 'position_ids'],
+                        non_tensor_batch_keys=['raw_prompt_ids', 'multi_modal_data', 'multi_modal_inputs', 'raw_prompt',
+                                               'data_source', 'reward_model'],
+                    )
+                else:
+                    gen_batch = batch.pop(
+                        batch_keys=['input_ids', 'attention_mask', 'position_ids'],
+                        non_tensor_batch_keys=['raw_prompt_ids', 'raw_prompt', 'data_source', 'reward_model'],
+                    )
 
                 with _timer('step', timing_raw):
                     # generate a batch
